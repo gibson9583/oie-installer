@@ -28,9 +28,11 @@ final class NativeProcesses {
             // stdin and both output streams are already redirected below.
             command.addAll(List.of("/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "oie-engine", launcher.toString()));
         } else command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
-        Process process = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(home.resolve("logs/oieserver.out").toFile())).redirectErrorStream(true).start();
-        return process.pid();
+        ProcessBuilder builder = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(home.resolve("logs/oieserver.out").toFile())).redirectErrorStream(true);
+        // A jpackage launcher (oieservice start) marks its own relaunch in the environment; the engine launcher must not inherit it.
+        builder.environment().keySet().removeIf(name -> name.toUpperCase(Locale.ROOT).contains("JPACKAGE"));
+        return builder.start().pid();
     }
     static void stopOwned(Path home) throws Exception {
         List<ProcessHandle> processes = Model.engineProcesses(home);

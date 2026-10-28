@@ -27,6 +27,7 @@ public final class Main {
                 throw new IllegalArgumentException("Usage: OIE Installer [--unattended plan.json | --uninstall <folder> --yes]");
             } catch (Exception e) {
                 System.err.println(e.getMessage());
+                if (System.getenv("OIE_INSTALLER_DEBUG") != null) e.printStackTrace();
                 System.exit(e instanceof IllegalArgumentException ? 2 : 1);
             }
         } else {

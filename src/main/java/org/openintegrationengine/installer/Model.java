@@ -38,9 +38,11 @@ final class Model {
     }
     static boolean portFree(int port) {
         if (port < 1 || port > 65535) return false;
-        try (ServerSocket socket = new ServerSocket()) { socket.setReuseAddress(false); socket.bind(new InetSocketAddress("0.0.0.0", port)); }
+        // Like the engine's own listener, ignore closed connections in TIME_WAIT. Windows reuse would also share a live listener.
+        boolean reuse = !WINDOWS;
+        try (ServerSocket socket = new ServerSocket()) { socket.setReuseAddress(reuse); socket.bind(new InetSocketAddress("0.0.0.0", port)); }
         catch (IOException e) { return false; }
-        try (ServerSocket socket = new ServerSocket()) { socket.setReuseAddress(false); socket.bind(new InetSocketAddress("::", port)); }
+        try (ServerSocket socket = new ServerSocket()) { socket.setReuseAddress(reuse); socket.bind(new InetSocketAddress("::", port)); }
         catch (SocketException e) { return e.getMessage().contains("family") || e.getMessage().contains("supported"); }
         catch (IOException e) { return false; }
         return true;

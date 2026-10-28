@@ -48,7 +48,7 @@ def run(command: list, expect: int | None = 0, timeout: int = 900) -> int:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             text = data.decode("cp1252" if WINDOWS else "latin-1", "replace")
-        print(text.rstrip(), flush=True)
+        print("\n".join(line for line in text.splitlines() if line.strip()), flush=True)
     if expect is not None and code != expect:
         raise SystemExit(f"Expected exit {expect}, got {code}")
     return code
@@ -87,7 +87,10 @@ def diagnostics(home: Path) -> None:
     if unit and sys.platform.startswith("linux"):
         run(["systemctl", "status", "--no-pager", unit], expect=None)
         run(["journalctl", "--no-pager", "-n", "80", "-u", unit], expect=None)
-    elif unit and WINDOWS:
+    if WINDOWS:
+        run(["whoami", "/user", "/groups"], expect=None)
+        run(["icacls", home / "conf", "/T"], expect=None)
+    if unit and WINDOWS:
         run(["sc.exe", "query", unit], expect=None)
     elif unit and MAC:
         run(["launchctl", "print", "system/" + unit], expect=None)
@@ -163,6 +166,7 @@ def smoke(service: bool, http: int, https: int) -> None:
 
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    os.environ["OIE_INSTALLER_DEBUG"] = "1"
     smoke(True, 18080, 18443)
     smoke(False, 28080, 28443)
     return 0

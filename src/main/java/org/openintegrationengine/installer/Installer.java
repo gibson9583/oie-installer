@@ -69,6 +69,14 @@ final class Installer {
             steps = steps(destination.existing() != null);
             for (String id : steps) event(id, "pending", "", 0);
             try { return install(plan, destination); }
+            catch (FileSystemException e) {
+                // A bare path is the whole message of most file errors; say what happened to it.
+                String reason = e instanceof AccessDeniedException ? "Access was denied to " + e.getFile()
+                        : e instanceof NoSuchFileException ? "Missing " + e.getFile() : e.getMessage();
+                IOException readable = new IOException(reason, e);
+                if (active != null) event(active, "error", reason, 0);
+                throw readable;
+            }
             catch (Exception e) { if (active != null) event(active, "error", e.getMessage(), 0); throw e; }
         }
     }
