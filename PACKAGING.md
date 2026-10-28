@@ -12,7 +12,7 @@ The implementation follows the released OIE **4.7.0** configuration (install4j *
 
 No tar.gz is shipped inside the new installer. The verified source archives remain in the build download cache. Engine files are copied from the staged tree at installation time; plugin ZIPs are unpacked only when selected.
 
-The engine's runtime lives in its installation, independently of the wizard. Both runtimes use the selected build JDK, currently Temurin 21.0.13+9. The engine image includes the full JDK module set and the Java command. This avoids guessing which modules existing extensions need.
+The engine's runtime lives in its installation, independently of the wizard. Both runtimes use the selected build JDK: the local macOS build uses Temurin 21.0.13+9, while Windows CI resolves the latest available Temurin Java 21 for Windows using setup-java v5. Platform releases can arrive at different times. The exact JDK version is recorded in the build receipt. The engine image includes the full JDK module set and the Java command. This avoids guessing which modules existing extensions need.
 
 ## Native launcher behavior
 

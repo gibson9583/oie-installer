@@ -40,10 +40,12 @@ jobs:
           ref: v${{ env.ENGINE_VERSION }}
           fetch-depth: 1
           path: engine
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 21.0.13+9
+          # Platform releases can arrive at different times; resolve the latest Windows Java 21.
+          java-version: '21'
+          check-latest: true
           cache: maven
           cache-dependency-path: installer/pom.xml
       - uses: actions/setup-python@v5
