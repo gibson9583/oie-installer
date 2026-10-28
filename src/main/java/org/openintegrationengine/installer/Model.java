@@ -57,7 +57,11 @@ final class Model {
         Thread.ofVirtual().start(() -> { try { outputBytes.complete(process.getInputStream().readAllBytes()); } catch (IOException e) { outputBytes.completeExceptionally(e); } });
         if (!process.waitFor(120, TimeUnit.SECONDS)) { process.destroyForcibly(); throw new IOException("Command timed out: " + args[0]); }
         String output;
-        try { output = new String(outputBytes.get(5, TimeUnit.SECONDS), java.nio.charset.StandardCharsets.UTF_8).trim(); }
+        try {
+            // PowerShell reports module-loading progress as CLIXML on stderr, ahead of any script output.
+            output = new String(outputBytes.get(5, TimeUnit.SECONDS), java.nio.charset.StandardCharsets.UTF_8).lines()
+                    .filter(line -> !line.startsWith("#< CLIXML") && !line.startsWith("<Objs ")).collect(java.util.stream.Collectors.joining("\n")).trim();
+        }
         catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) { throw new IOException("Cannot read command output: " + args[0], e); }
         if (process.exitValue() != 0) throw new IOException(args[0] + " failed: " + output);
         return output;
