@@ -61,6 +61,8 @@ final class ServiceControl {
             Thread.sleep(500);
         }
         System.err.println("The engine did not stop within 70 seconds.");
+        for (ProcessHandle process : Model.engineProcesses(home))
+            System.err.println("  still running: " + process.pid() + " " + process.info().command().orElse("?"));
         return 1;
     }
 }

@@ -145,8 +145,11 @@ final class Model {
     record Destination(Path home, String mode, Existing existing, long free, long needed) {}
     static List<ProcessHandle> engineProcesses(Path home) {
         String launcher = home + "/mirth-server-launcher.jar", legacy = home + "/.install4j/";
+        // Exclude this process and the launchers above it: a native launcher can host the JVM in a child process.
+        Set<Long> self = new HashSet<>();
+        for (Optional<ProcessHandle> p = Optional.of(ProcessHandle.current()); p.isPresent(); p = p.get().parent()) self.add(p.get().pid());
         try (var all = ProcessHandle.allProcesses()) {
-            return all.filter(p -> p.pid() != ProcessHandle.current().pid()).filter(p -> {
+            return all.filter(p -> !self.contains(p.pid())).filter(p -> {
                 var info = p.info();
                 if (info.command().isPresent()) {
                     Path command = Path.of(info.command().get()).toAbsolutePath().normalize();
