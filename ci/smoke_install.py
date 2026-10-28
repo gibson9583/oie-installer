@@ -11,10 +11,12 @@ import json
 import os
 import secrets
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -97,6 +99,18 @@ def diagnostics(home: Path) -> None:
         run(["launchctl", "print", "system/" + unit], expect=None)
 
 
+def web_client(port: int) -> bool:
+    """The Web Support add-on serves the bundled OIE Web Client."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE  # The new engine's self-signed loopback certificate.
+    try:
+        with urllib.request.urlopen(f"https://localhost:{port}/oie-webadmin/", context=context, timeout=10) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
 def launcher(home: Path, name: str) -> Path:
     return home / (name + EXE)
 
@@ -137,6 +151,7 @@ def smoke(service: bool, http: int, https: int) -> None:
             run([service_launcher, "start"], expect=0)
             wait(lambda: run([service_launcher, "status"], expect=None) == 0, "oieservice status")
             wait(lambda: port_open(https), f"HTTPS port {https}")
+            wait(lambda: web_client(https), "the OIE Web Client", seconds=180)
 
             script = Path(work) / "cli.txt"
             script.write_text("status\n")

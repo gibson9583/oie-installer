@@ -86,12 +86,18 @@ final class Services {
             Model.command("icacls.exe", home.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/Q");
             if (service) Model.command("icacls.exe", home.toString(), "/grant:r", "*S-1-5-19:(OI)(CI)RX", "/Q");
             inherit(home);
-            for (String name : List.of("conf", "appdata", "logs", "backups")) {
+            // The engine writes conf, appdata and logs; Web Support deploys into webapps.
+            for (String name : List.of("conf", "appdata", "logs", "backups", "webapps")) {
                 Path folder = home.resolve(name); Files.createDirectories(folder);
                 List<String> args = new ArrayList<>(List.of("icacls.exe", folder.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", Privileges.invokingUser() + (service ? ":(OI)(CI)R" : ":(OI)(CI)M")));
                 if (service && !name.equals("backups")) args.add("*S-1-5-19:(OI)(CI)M");
                 args.add("/Q"); Model.command(args.toArray(String[]::new));
                 inherit(folder);
+            }
+            if (service) {
+                // Derby opens derby.log in the working directory before the engine redirects it.
+                Path derby = home.resolve("derby.log"); if (!Files.exists(derby)) Files.createFile(derby);
+                Model.command("icacls.exe", derby.toString(), "/grant:r", "*S-1-5-19:M", "/Q");
             }
         }
     }
@@ -166,7 +172,7 @@ final class Services {
         String kind = record.path("kind").asText(), name = record.path("name").asText();
         try {
             if (kind.equals("windows") || kind.equals("install4j-windows"))
-                return Model.command("powershell.exe", "-NoProfile", "-Command", "(Get-Service -Name " + Privileges.powershell(name) + " -ErrorAction SilentlyContinue).Status").equalsIgnoreCase("Running");
+                return Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded("(Get-Service -Name " + Privileges.powershell(name) + " -ErrorAction SilentlyContinue).Status")).equalsIgnoreCase("Running");
             if (kind.contains("launchd")) return Model.command("launchctl", "print", (kind.equals("launchd") ? "gui/" + Privileges.invokingUid() : "system") + "/" + name).contains("state = running");
             return Model.command("systemctl", kind.equals("systemd") ? "--user" : "--system", "is-active", name).equals("active");
         } catch (IOException notRunning) { return false; }
