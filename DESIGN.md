@@ -1,0 +1,23 @@
+# OIE Installer JavaFX design
+
+This is a native-control counterpart of the sibling OIE Installer. Preserve its operational layout and product wording rather than introducing a new visual identity.
+
+The desktop window starts at 1120 × 760, with a minimum of 960 × 640. A 222-pixel dark sidebar shows the ordered wizard steps. The sidebar brand block and main header both have a fixed height of 64 pixels, sharing one horizontal boundary. The header title, form and footer actions share a 34-pixel main-area inset. A compact 26-pixel host chip stays vertically centered. The main area has a scrollable form surface and a persistent Back/Next footer. Installation progress replaces the editable form and prevents closing while work runs.
+
+The mode is **Operate**: clear choices, predictable navigation, readable paths, accessible native form controls and recoverable errors take priority over decoration. JavaFX controls supply keyboard handling and accessibility semantics. Text fields have associated labels; add-on controls include descriptive help. Secrets use password fields with an explicit Show/Hide control.
+
+The dark palette follows the existing installer: background `#0c1116`, panel `#16212c`, input `#111922`, text `#d9e2ea`, accent `#58a6e8`, borders `#2f4254`. The light palette keeps dark navigation while using background `#e9edf2`, panels `#fbfcfe`, text `#1f2c38`, accent `#2e6da4` and borders `#c4d0dc`. Theme preference persists without saving credentials or installation plans.
+
+Use the same bundled Inter and JetBrains Mono fonts as the Tauri app, with 12-pixel base text, 19-pixel form headings and a 24-pixel welcome heading. Inter’s regular, medium, semibold and bold faces are packaged as static TTF instances for JavaFX. Medium and semibold use explicit font families so native font registration cannot replace the regular face. Monospace is reserved for commands, paths, hashes and logs. Panels use 9-pixel corners. Form content is capped at 720 pixels, left aligned with a 34-pixel page inset. The footer spans the available width and anchors Next at the right edge.
+
+Match components as well as colors: circular sidebar markers, the original banner artwork, a compact host chip and theme icon, 38 × 22 sliding switches, selected radio cards for Java and databases, version badges, inline password actions and separated Review rows. Switches and option cards retain ToggleButtonSkin/RadioButtonSkin behavior for mouse, keyboard and accessibility rather than replacing controls with click-only graphics.
+
+Welcome explains the installation choices and bundled add-ons, with inline license acceptance and a local Read license dialog. Archive filenames, sizes, hashes, launcher commits and timestamps belong in the collapsed Package details disclosure. They remain available for support without dominating the first screen.
+
+Done follows the Tauri composition: a 58-pixel green outlined success mark beside the heading, a two-column Address and Sign in/Backup row, full-width Service/Process and Folder panels, and a right-aligned Close action. Commands and paths use selectable, horizontally scrollable read-only fields with separate Copy/Show actions. The initial password stays masked until explicitly revealed. Upgrade and reinstall show backup information instead of new credentials. Keep the Web Client action when that add-on was selected.
+
+Transitions are restrained: directional page movement settles over 240 ms, and switch thumbs move over 190 ms. Selecting a service or database updates the existing view rather than rebuilding the entire screen. Setting the JVM property `oie.reduceMotion=true` disables these animations.
+
+Bundled Java 21 and the boot-time system service are the default selections. Review describes the administrator approval and actual service scope. New installations expose network, database and administrator settings. Existing engines skip those screens and preserve their settings. Add-ons always appear after Service and before Review. Every add-on starts enabled and its exact package version and final selection appear in Review. Do not restore the removed footer note about internet connectivity.
+
+The CSS source of truth is `src/main/resources/installer.css`; UI composition lives in `Wizard.java`. JavaFX intentionally renders native controls instead of reusing the HTML/CSS implementation or embedding a browser.

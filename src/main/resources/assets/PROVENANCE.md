@@ -1,0 +1,3 @@
+The white and dark banner PNGs are renderings of the existing OIE Installer banner SVG artwork. They preserve the original artwork and ownership. They were converted to PNG for native JavaFX ImageView support.
+
+The bundled Inter and JetBrains Mono TTFs are static instances of the existing installer’s licensed WOFF2 fonts. Inter uses the original 14-point optical-size axis and weights 400, 500, 600 and 700; JetBrains Mono uses weight 400. Native font-family metadata distinguishes the medium and semibold faces so they do not overwrite the regular face when JavaFX registers them. The original font licenses are included alongside the fonts.

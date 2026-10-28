@@ -1,0 +1,71 @@
+name: Build native installers
+on:
+  push:
+    branches: [main, "codex/**"]
+  workflow_dispatch:
+    inputs:
+      engine_version:
+        description: Engine release, or latest
+        default: latest
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: native-installers-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: installer
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenIntegrationEngine/engine
+          fetch-depth: 0
+          path: engine
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21.0.13+9
+          cache: maven
+          cache-dependency-path: installer/pom.xml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare native packaging tools
+        shell: pwsh
+        run: |
+          $nsis = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'NSIS\makensis.exe'
+          if (-not (Test-Path $nsis)) {
+            choco install nsis --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
+          }
+          "$((Split-Path $nsis))" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build Windows installer
+        working-directory: installer
+        shell: pwsh
+        env:
+          ENGINE_VERSION: ${{ inputs.engine_version || 'latest' }}
+        run: |
+          python -u build.py --version $env:ENGINE_VERSION --engine-repo ../engine --java-home $env:JAVA_HOME --type exe
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
+      - name: Upload Windows distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: oie-installer-windows-x64
+          path: installer/dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-diagnostics
+          path: |
+            installer/target/windows-bootstrap.nsi
+            installer/payload/manifest.json
+          if-no-files-found: ignore

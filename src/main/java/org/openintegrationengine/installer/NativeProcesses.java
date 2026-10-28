@@ -1,0 +1,150 @@
+package org.openintegrationengine.installer;
+
+import java.io.*;
+import java.nio.file.*;
+import java.time.Instant;
+import java.util.*;
+
+final class NativeProcesses {
+    static long start(Path home, Payload payload) throws Exception {
+        Path launcher = payload.launcher(home, "oieserver"); Files.createDirectories(home.resolve("logs"));
+        if (Model.WINDOWS) {
+            String script = "$ErrorActionPreference='Stop'; (New-Object -ComObject Shell.Application).ShellExecute("
+                    + Privileges.powershell(launcher.toString()) + ",''," + Privileges.powershell(home.toString()) + ",'open',0)";
+            Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+            Instant until = Instant.now().plusSeconds(30);
+            while (Instant.now().isBefore(until)) {
+                var processes = Model.engineProcesses(home); if (!processes.isEmpty()) return processes.getFirst().pid(); Thread.sleep(200);
+            }
+            throw new IOException("The engine launcher did not start in the desktop session.");
+        }
+        List<String> command = new ArrayList<>();
+        if (Privileges.administrator() && !Privileges.invokingUser().equals("root")) command.addAll(List.of("/usr/bin/sudo", "-n", "-u", Privileges.invokingUser(), "--"));
+        command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
+        Process process = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(home.resolve("logs/oieserver.out").toFile())).redirectErrorStream(true).start();
+        return process.pid();
+    }
+    static void stopOwned(Path home) throws Exception {
+        List<ProcessHandle> processes = Model.engineProcesses(home);
+        if (processes.isEmpty()) return;
+        if (!Model.WINDOWS) {
+            Set<Long> owned = new HashSet<>(); processes.forEach(p -> owned.add(p.pid()));
+            for (ProcessHandle process : processes) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) process.destroy();
+            return;
+        }
+        long pid = processes.getFirst().pid();
+        String script = """
+            $ErrorActionPreference='Stop'
+            Add-Type -TypeDefinition @'
+            using System;
+            using System.Runtime.InteropServices;
+            public static class OieConsole {
+              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool FreeConsole();
+              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool AttachConsole(uint processId);
+              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent,uint group);
+              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler,bool add);
+            }
+            '@
+            [OieConsole]::FreeConsole() | Out-Null
+            if(-not [OieConsole]::AttachConsole(%d)){throw 'Cannot attach to the engine console. Stop the engine manually before upgrading.'}
+            try {
+              [OieConsole]::SetConsoleCtrlHandler([IntPtr]::Zero,$true) | Out-Null
+              if(-not [OieConsole]::GenerateConsoleCtrlEvent(0,0)){throw 'Could not request graceful engine shutdown.'}
+              Start-Sleep -Milliseconds 1000
+            } finally { [OieConsole]::FreeConsole() | Out-Null }
+            """.formatted(pid);
+        Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+    }
+    static String backendClasspath(Path home) {
+        Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
+        return app.resolve("oie-installer-jpackage.jar") + File.pathSeparator + app.resolve("lib/*");
+    }
+    static void tools(Path home, Payload payload, String version) throws Exception {
+        Path java = payload.engineJava(home); String classpath = backendClasspath(home);
+        if (Model.WINDOWS) {
+            String script = """
+                param([switch]$Yes)
+                $ErrorActionPreference='Stop'
+                if(-not $Yes -and (Read-Host 'Delete this engine, its database, logs and backups? Type yes') -ne 'yes'){exit 1}
+                $admin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+                if(-not $admin){
+                  $p=Start-Process powershell.exe -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Yes') -Wait -PassThru
+                  exit $p.ExitCode
+                }
+                & %s -cp %s org.openintegrationengine.installer.Main --uninstall %s --yes
+                exit $LASTEXITCODE
+                """.formatted(Privileges.powershell(java.toString()), Privileges.powershell(classpath), Privileges.powershell(home.toString()));
+            Files.writeString(FilesSupport.safeTarget(home, "oie-uninstall.ps1"), script);
+            String key = registryKey(home);
+            String register = "$ErrorActionPreference='Stop'; $k=" + Privileges.powershell(key) + "; New-Item -Path $k -Force | Out-Null; "
+                    + "New-ItemProperty $k DisplayName -Value 'Open Integration Engine' -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k DisplayVersion -Value " + Privileges.powershell(version) + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k Publisher -Value 'Open Integration Engine contributors' -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k InstallLocation -Value " + Privileges.powershell(home.toString()) + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k UninstallString -Value " + Privileges.powershell("\"" + home.resolve("oie-uninstall.exe") + "\"") + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k NoModify -Value 1 -PropertyType DWord -Force | Out-Null; New-ItemProperty $k NoRepair -Value 1 -PropertyType DWord -Force | Out-Null";
+            Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(register));
+        } else {
+            String invoke = FilesSupport.quote(java.toString()) + " -cp " + FilesSupport.quote(classpath) + " " + Main.class.getName() + " --uninstall " + FilesSupport.quote(home.toString()) + " --yes";
+            String script = """
+                #!/bin/sh
+                set -eu
+                if [ "$#" -eq 0 ] || [ "$1" != --yes ]; then
+                  printf 'This deletes the engine, database, logs and backups in %%s. Type yes: ' %s
+                  read -r answer
+                  [ "$answer" = yes ] || exit 1
+                fi
+                if [ "$(id -u)" != 0 ]; then exec sudo %s; fi
+                exec %s
+                """.formatted(FilesSupport.quote(home.toString()), invoke, invoke);
+            Path uninstaller = FilesSupport.safeTarget(home, "oie-uninstall"); Files.writeString(uninstaller, script); FilesSupport.executable(uninstaller);
+        }
+    }
+    private static String registryKey(Path home) throws Exception {
+        return "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OIE-" + Services.label(home);
+    }
+    static void retireLegacyRegistration(Path home, Path backup) throws Exception {
+        if (!Model.WINDOWS || !Files.isDirectory(home.resolve(".install4j"))) return;
+        String script = """
+            $ErrorActionPreference='Stop'
+            $homeDir=%s
+            $ownKey=%s
+            $matches=@()
+            foreach($base in @('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')){
+              foreach($key in Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue){
+                $p=Get-ItemProperty -LiteralPath $key.PSPath
+                $cmd=[string]$p.UninstallString
+                $exe=if($cmd.StartsWith('"')){($cmd -split '"')[1]}else{($cmd -split '\\s+')[0]}
+                if(($p.InstallLocation -and ([string]$p.InstallLocation).TrimEnd('\\') -ieq $homeDir.TrimEnd('\\')) -or $exe -ieq ($homeDir+'\\uninstall.exe')){
+                  if($key.Name -ne $ownKey.Replace('HKLM:','HKEY_LOCAL_MACHINE')){$matches+=@{path=$key.PSPath;values=$p}}
+                }
+              }
+            }
+            if($matches.Count -gt 0){
+              $matches | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath %s -Encoding UTF8
+              foreach($item in $matches){Remove-Item -LiteralPath $item.path -Recurse -Force}
+            }
+            """.formatted(Privileges.powershell(home.toString()), Privileges.powershell(registryKey(home)), Privileges.powershell(backup.resolve("previous-uninstall-registration.json").toString()));
+        Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+    }
+    static void windowsRemove(Path home) throws Exception {
+        String remove = "Remove-Item -LiteralPath " + Privileges.powershell(registryKey(home)) + " -Recurse -Force -ErrorAction SilentlyContinue";
+        Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(remove));
+        Path script = Files.createTempFile("oie-uninstall-", ".ps1"); Json.privateFile(script);
+        String cleanup = """
+            $ErrorActionPreference='Stop'
+            $root=%s
+            for($i=0;$i -lt 90;$i++){
+              $owned=Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)}
+              if(-not $owned){break}; Start-Sleep -Seconds 1
+            }
+            if($owned){throw 'An engine executable is still running. The engine folder was retained.'}
+            Remove-Item -LiteralPath $root -Recurse -Force
+            Remove-Item -LiteralPath $PSCommandPath -Force
+            """.formatted(Privileges.powershell(home.toString()));
+        Files.writeString(script, cleanup);
+        new ProcessBuilder("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.toString())
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(script.resolveSibling(script.getFileName() + ".log").toFile())).redirectErrorStream(true).start();
+    }
+}
