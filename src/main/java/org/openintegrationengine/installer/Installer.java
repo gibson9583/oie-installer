@@ -110,6 +110,12 @@ final class Installer {
             }
             NativeProcesses.retireLegacyRegistration(home, backup);
             Services.stop(home, existing.service(), true);
+            ObjectNode stopped = existing.receipt() == null ? Json.object() : existing.receipt().deepCopy();
+            if (!stopped.has("archiveSha256")) stopped.put("archiveSha256", "");
+            if (!stopped.has("launcherCommit")) stopped.put("launcherCommit", "install4j");
+            stopped.put("version", existing.version()).put("pendingPayloadSha256", payload.sourceHash())
+                    .put("home", home.toString()).put("migrationPending", true).putNull("service");
+            Json.write(home.resolve(Model.RECEIPT), stopped);
             done("backup", backup.toString());
             begin("replace"); Archives.retire(home, layout, backup.resolve("program"));
         } else { begin("unpack"); Files.createDirectories(home); }
@@ -148,7 +154,7 @@ final class Installer {
                 .put("installer", "jpackage").put("home", home.toString()).put("nativeEngine", true).put("javaCmd", selectedJava.toString())
                 .put("invokingUser", Privileges.invokingUser()).put("invokingHome", Privileges.invokingHome().toString()).put("invokingUid", Privileges.invokingUid());
         if (!receipt.has("installedAt")) receipt.put("installedAt", now);
-        receipt.remove("service");
+        receipt.remove(List.of("service", "migrationPending", "pendingPayloadSha256", "legacyInstall4j"));
         int https = upgrade ? existing.httpsPort() : plan.httpsPort(); receipt.put("httpsPort", https); receipt.putNull("pid");
         if (upgrade) {
             var history = receipt.has("history") && receipt.path("history").isArray() ? receipt.withArray("history") : receipt.putArray("history");

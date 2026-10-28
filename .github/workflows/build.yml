@@ -22,10 +22,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: installer
+      - name: Resolve engine release
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.engine_version || 'latest' }}
+        run: |
+          $version = $env:REQUESTED_VERSION
+          if ($version -eq 'latest') {
+            $release = Invoke-RestMethod 'https://api.github.com/repos/OpenIntegrationEngine/engine/releases/latest' -Headers @{'User-Agent'='oie-installer-build'}
+            $version = $release.tag_name -replace '^v',''
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid engine release: $version" }
+          "ENGINE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/checkout@v4
         with:
           repository: OpenIntegrationEngine/engine
-          fetch-depth: 0
+          ref: v${{ env.ENGINE_VERSION }}
+          fetch-depth: 1
           path: engine
       - uses: actions/setup-java@v4
         with:
@@ -48,8 +61,6 @@ jobs:
       - name: Build Windows installer
         working-directory: installer
         shell: pwsh
-        env:
-          ENGINE_VERSION: ${{ inputs.engine_version || 'latest' }}
         run: |
           python -u build.py --version $env:ENGINE_VERSION --engine-repo ../engine --java-home $env:JAVA_HOME --type exe
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
