@@ -30,7 +30,7 @@ See [packaging and service comparison](PACKAGING.md) for the current OIE install
 
 ## Build
 
-Requirements: JDK 21 or later, Maven 3.9+, Python 3.10+, and an engine source clone containing the matching release tag. Packaging must run on the target operating system. macOS builds also require the Xcode command-line tools.
+Requirements: JDK 21 or later, Python 3.10+, and an engine source clone containing the matching release tag. Packaging must run on the target operating system. macOS builds also require the Xcode command-line tools.
 
 ```bash
 python3 build.py --engine-repo ../oie --java-home /path/to/current/jdk-21/Contents/Home
@@ -56,14 +56,19 @@ python3 build.py --app-only --java-home /path/to/jdk-21 --type dmg
 python3 build.py --app-only --type app-image
 ```
 
-Native outputs (platform builds run on that platform):
+The Maven Wrapper (`mvnw`) supplies Maven 3.9.12. Each platform builds on that platform. The outputs match the installer platforms of the OIE install4j media:
 
-- `target/image/OIE Installer JavaFX.app`
-- `dist/OIE-Installer-JavaFX-<engine version>-macos-arm64.dmg` (or `-x64`)
-- Windows: `dist/OIE-Installer-JavaFX-<engine version>-windows-x64.exe`, opening the custom wizard directly.
-- A matching `.sha256` file and `dist/build-receipt.json`.
+| Platform | Output in `dist/` |
+| --- | --- |
+| macOS ARM64 and x64 | `OIE-Installer-JavaFX-<version>-macos-<arch>.dmg` |
+| Windows x64 and ARM64 | `OIE-Installer-JavaFX-<version>-windows-<arch>.exe` |
+| Linux x64 and ARM64 | `OIE-Installer-JavaFX-<version>-linux-<arch>.tar.gz` |
 
-Windows EXEs use an NSIS self-extracting wrapper around the jpackage app image, so the first screen is the JavaFX wizard. NSIS 3 is a Windows build prerequisite. GitHub Actions builds the Windows distribution in the user-designated private repository, with tests skipped. The workflow downloads verified engine/add-on releases during the build.
+Each output has a `.sha256` file and `dist/build-receipt.json`.
+
+Windows EXEs are an NSIS self-extracting wrapper around the jpackage app image. The first screen is the JavaFX wizard. NSIS 3 is a Windows build prerequisite. JavaFX 21 has no Windows ARM64 build. The Windows ARM64 wizard is x64 and runs under emulation. Its engine runtime is native ARM64; pass that JDK with `--engine-java-home`. The Linux archive holds the app image; run `bin/OIE Installer JavaFX` as root.
+
+GitHub Actions builds all six outputs. Each job then installs the engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, and uninstalls it.
 
 The build explicitly ad-hoc signs the macOS application, wraps the finished jpackage image with `hdiutil`, and verifies its signature and every payload hash inside the DMG before handoff. Developer ID signing and notarization are still needed for public distribution. DMG creation does not request Finder Automation access.
 
@@ -84,7 +89,7 @@ Maven writes runtime dependencies to `target/lib/`; the application JAR’s mani
 
 The engine has its **own bundled Java 21 runtime**, separate from the wizard. Removing the installer does not remove the engine runtime. Java defaults to the bundled runtime; an existing Java 17+ executable can be selected instead. The selection is written to `conf/custom.vmoptions`.
 
-Jpackage generates native `oieserver`, `oieservice`, `oiecommand` and uninstaller launchers. The engine bridge preserves the working directory and OIE's VM-options includes, classpath directives, Java override and command-line arguments. macOS uses a nested engine app with small top-level launcher scripts; Windows uses native EXEs in the engine folder.
+Jpackage generates native `oieserver`, `oieservice`, `oiecommand` and uninstaller launchers. `oieservice` accepts the install4j verbs `start`, `stop`, `restart`, `force-reload`, `status` and `run`. With a registered service, `start`, `stop` and `restart` use the service manager and need administrator rights. `status` exits 0 when the engine runs and 3 when it does not. Without a verb, `oieservice` runs the engine in the foreground for the service manager. Windows also receives the install4j Start Menu group: **Open Integration Engine** (the command line) and **Uninstall Open Integration Engine**. The engine bridge preserves the working directory and OIE's VM-options includes, classpath directives, Java override and command-line arguments. macOS uses a nested engine app with small top-level launcher scripts; Windows uses native EXEs in the engine folder.
 
 The build extracts the verified official release **at build time**, removes install4j-generated launchers, uninstallers and `.install4j`, and generates the native engine image. A per-file hash/mode manifest covers the staged engine, its runtime, native launchers and three add-on ZIPs. The compressed source archive remains only in the download cache and provenance record.
 
@@ -135,13 +140,16 @@ The application also supports `--uninstall <engine folder> --yes`. It verifies t
 
 ## Scope and limitations
 
-- Native distribution targets for this iteration are macOS ARM64 and Windows x64. Other architectures need their own native builds.
+- The installer always bundles Java. There are no separate install4j-style "without JRE" media; an existing Java 17+ can still run the engine.
+- Linux has no administrator prompt. Run the Linux wizard or unattended install as root.
+- Windows ARM64 uses the x64 WinSW service wrapper under emulation.
+- `oiecommand.exe` does not request elevation, and the launchers do not enforce install4j's single-instance check.
 - External database connections are not tested by the wizard.
 - A failed operation stops and reports its error, preserving completed changes and backups. There is no automatic whole-engine rollback, database rollback, interrupted-upgrade resumption or automatic update service.
 - Archive paths and links are checked before extraction. Backups refuse links or special files when a complete backup cannot be established.
 - Loopback readiness checks accept the engine’s self-signed certificate only for individual localhost HTTPS connections; global TLS settings are unchanged.
 - Pinned hashes protect integrity. Public release authentication still requires properly signed/notarized installer distributions and a trusted release pipeline.
-- Compilation and packaging were performed. No engine installation tests were run, as requested; the app is ready for manual evaluation.
+- The CI smoke test covers new installs and uninstall. Upgrades and the GUI are validated manually.
 
 ## Source map
 

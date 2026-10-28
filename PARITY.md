@@ -1,13 +1,14 @@
 # Install4j behavior and validation matrix
 
-Scope: macOS ARM64 and Windows x64. OIE 4.7.0/install4j 13.1.1 is the source baseline. The JavaFX wizard, add-on choices and revised Welcome/Done styling are retained. This matrix describes implemented call paths; **engine installation, service and upgrade tests are intentionally not run at the user's request**. Those rows require manual validation.
+Scope: macOS ARM64/x64, Windows x64/ARM64 and Linux x64/ARM64. OIE 4.7.0/install4j 13.1.1 is the source baseline. The JavaFX wizard, add-on choices and revised Welcome/Done styling are retained. This matrix describes implemented call paths. Each CI job installs a new engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, and uninstalls it. Upgrade rows still require manual validation.
 
 | Behavior | Implementation and expected outcome | Evidence / validation |
 | --- | --- | --- |
 | License | Separate step 2 displays the bundled MPL 2.0 text and requires acceptance before Location; acceptance is retained during navigation and later steps are blocked if revoked | Released install4j LicenseScreen; native UI source/static render |
 | New install | Choose folder/runtime/ports/database/admin/service/add-ons, Review, elevate once, install/start/verify | Compilation and source tracing; manual execution pending |
 | Engine runtime | Independent bundled Java 21 default; external Java 17+ remains selectable | Native image/config and runtime file inspection |
-| Native launchers | Server/service/CLI launchers use the real released main classes and working directory | Release-tag source and generated launcher configs |
+| Native launchers | Server/service/CLI launchers use the real released main classes and working directory. `oieservice` accepts install4j's `start`, `stop`, `restart`, `force-reload`, `status` and `run` verbs | CI smoke test on all six platforms |
+| Start Menu | Windows program group **Open Integration Engine** with the command line and **Uninstall Open Integration Engine**, removed by the uninstaller | CI smoke test on Windows |
 | Service default | On, independently switchable; starts at boot without interactive sign-in | System launchd/SCM code; manual boot validation pending |
 | Service identity | macOS installing user; Windows Local Service; independent of wizard lifetime | Plist/WinSW contracts and ownership code; manual validation pending |
 | Add-ons | All three bundled/default on, independent switches, selections included in Review | Release descriptor/version checks and static UI |
@@ -25,6 +26,6 @@ Scope: macOS ARM64 and Windows x64. OIE 4.7.0/install4j 13.1.1 is the source bas
 | No-service mode | Start once in desktop user context; no boot registration. macOS uses a hangup-ignoring exec wrapper with redirected I/O, avoiding nohup's console-detach failure | Native process paths; manual engine validation pending |
 | Uninstall | Independent runtime/backend; confirmation, exact service ownership checks and graceful stop; Windows defers locked-file deletion | Source tracing; manual deletion validation pending |
 | UI | Shared header line, reviewed fonts/colors/controls, license, bundled runtime and system-service wording, matching Done composition | Static JavaFX scene verification |
-| Distribution | Native macOS build and Windows Actions build; checksums/receipt; tests skipped | Build logs and generated artifacts |
+| Distribution | macOS ARM64/x64 DMG, Windows x64/ARM64 EXE, Linux x64/ARM64 tar.gz from one Actions matrix; checksums/receipt | Build logs and generated artifacts |
 
-The installer does not claim database rollback, automatic background updates, every install4j media format/architecture, or publisher-signing parity. Those are separate from retaining the installation workflow and implementing native runtime/launcher/system-service/uninstall behavior on these two targets.
+The installer does not claim database rollback, automatic background updates, install4j's "without JRE" and archive media, or publisher-signing parity. Those are separate from retaining the installation workflow and implementing native runtime/launcher/system-service/uninstall behavior on these two targets.

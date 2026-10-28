@@ -14,44 +14,70 @@ concurrency:
   group: native-installers-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  windows:
-    name: Windows x64
-    runs-on: windows-2022
-    timeout-minutes: 35
+  installer:
+    # The installer platforms of the OIE install4j media: macOS ARM/Intel, Windows x64/ARM and Unix.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
+          - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
+          - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
+          # JavaFX 21 has no Windows ARM64 build: the wizard runs as x64; the engine runtime is native ARM64.
+          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-architecture: x64 }
+          - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: tar.gz }
+          - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: tar.gz }
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: installer
       - name: Resolve engine release
-        shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.engine_version || 'latest' }}
         run: |
-          $version = $env:REQUESTED_VERSION
-          if ($version -eq 'latest') {
-            $release = Invoke-RestMethod 'https://api.github.com/repos/OpenIntegrationEngine/engine/releases/latest' -Headers @{'User-Agent'='oie-installer-build'}
-            $version = $release.tag_name -replace '^v',''
-          }
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid engine release: $version" }
-          "ENGINE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - uses: actions/checkout@v4
+          version="$REQUESTED_VERSION"
+          if [ "$version" = latest ]; then
+            version=$(gh api repos/OpenIntegrationEngine/engine/releases/latest --jq .tag_name)
+            version="${version#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid engine release: $version"; exit 1; }
+          echo "ENGINE_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v7
         with:
           repository: OpenIntegrationEngine/engine
           ref: v${{ env.ENGINE_VERSION }}
           fetch-depth: 1
           path: engine
-      - uses: actions/setup-java@v5
+      - name: Set up the engine JDK
+        id: engine-jdk
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          # Platform releases can arrive at different times; resolve the latest Windows Java 21.
+          # Platform releases can arrive at different times; resolve the latest Java 21 for each.
           java-version: '21'
           check-latest: true
           cache: maven
           cache-dependency-path: installer/pom.xml
-      - uses: actions/setup-python@v5
+      - name: Set up the wizard JDK
+        if: matrix.wizard-architecture
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          architecture: ${{ matrix.wizard-architecture }}
+          check-latest: true
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Prepare native packaging tools
+      - name: Prepare NSIS
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $nsis = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'NSIS\makensis.exe'
@@ -60,24 +86,32 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           }
           "$((Split-Path $nsis))" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Build Windows installer
+      - name: Build installer
         working-directory: installer
-        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ENGINE_JDK: ${{ steps.engine-jdk.outputs.path }}
+        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}"
+      - name: Install, operate and uninstall the engine
+        working-directory: installer
         run: |
-          python -u build.py --version $env:ENGINE_VERSION --engine-repo ../engine --java-home $env:JAVA_HOME --type exe
-          if ($LASTEXITCODE -ne 0) { throw "Windows packaging failed" }
-      - name: Upload Windows distribution
-        uses: actions/upload-artifact@v4
+          if [ "$RUNNER_OS" = Windows ]; then
+            python -u ci/smoke_install.py
+          else
+            sudo "$(command -v python3)" -u ci/smoke_install.py
+          fi
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
         with:
-          name: oie-installer-windows-x64
+          name: oie-installer-${{ matrix.id }}
           path: installer/dist/*
           if-no-files-found: error
           retention-days: 14
       - name: Preserve build diagnostics on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: windows-build-diagnostics
+          name: diagnostics-${{ matrix.id }}
           path: |
             installer/target/windows-bootstrap.nsi
             installer/payload/manifest.json

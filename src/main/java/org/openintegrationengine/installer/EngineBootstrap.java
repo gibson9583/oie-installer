@@ -6,7 +6,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.*;
 
-/** Standalone entry point for the jpackage-generated engine launchers. No installer/UI dependencies. */
+/** Standalone entry point for the jpackage-generated engine launchers. No UI dependencies. */
 public final class EngineBootstrap {
     private static final boolean WINDOWS = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win");
     public static void main(String[] args) throws Exception {
@@ -17,6 +17,15 @@ public final class EngineBootstrap {
                     : new ArrayList<>(List.of("/bin/bash", home.resolve("oie-uninstall").toString()));
             for (String argument : args) uninstall.add(WINDOWS && argument.equals("--yes") ? "-Yes" : argument);
             System.exit(new ProcessBuilder(uninstall).inheritIO().start().waitFor()); return;
+        }
+        if (role.equals("service") && args.length > 0) {
+            // install4j's oieservice verbs; with no verb a service manager runs the engine in the foreground.
+            String verb = args[0].replaceFirst("^[-/]+", "").toLowerCase(Locale.ROOT);
+            switch (verb) {
+                case "run", "run-redirect", "start-launchd" -> args = Arrays.copyOfRange(args, 1, args.length);
+                case "start", "stop", "restart", "force-reload", "status" -> { System.exit(ServiceControl.run(home, verb)); return; }
+                default -> { System.err.println("Usage: oieservice {start|stop|run|run-redirect|status|restart|force-reload}"); System.exit(1); return; }
+            }
         }
         boolean cli = role.equals("command");
         String jar = cli ? "mirth-cli-launcher.jar" : "mirth-server-launcher.jar";

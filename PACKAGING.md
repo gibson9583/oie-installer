@@ -8,13 +8,13 @@ The implementation follows the released OIE **4.7.0** configuration (install4j *
 2. Extract the engine **at build time**, preserving the published engine JARs, configuration and built-in extensions.
 3. Remove install4j launchers, runtime metadata and uninstallers. Generate native server/service/CLI launchers with jpackage, plus a separate complete Java 21 runtime for the engine.
 4. Pin every staged engine/runtime file and its executable mode, plus add-on ZIP hashes, in the payload manifest. Keep the original release archive digest and commit as provenance.
-5. Bundle the staged payload in the JavaFX installer. macOS receives a DMG containing the app; Windows receives an NSIS self-extracting EXE containing the jpackage app image and opening the custom UI directly.
+5. Bundle the staged payload in the JavaFX installer. macOS receives a DMG containing the app. Windows receives an NSIS self-extracting EXE containing the jpackage app image and opening the custom UI directly. Linux receives a tar.gz of the app image.
 
 On macOS, sign the wizard before copying in the already-signed, pinned engine image, then seal only the outer wizard bundle. Recursive signing after embedding the payload would change engine binaries and invalidate their recorded hashes. Apple's `hdiutil` wraps that final jpackage app image in a DMG without changing its contents; jpackage's DMG bundler would recursively re-sign an ad-hoc image. The build verifies every pinned file in the final application image. It also mounts the completed DMG read-only, checks its app signature and verifies every payload hash before publishing the artifact; only that temporary mount is detached.
 
 No tar.gz is shipped inside the new installer. The verified source archives remain in the build download cache. Engine files are copied from the staged tree at installation time; plugin ZIPs are unpacked only when selected.
 
-The engine's runtime lives in its installation, independently of the wizard. Both runtimes use the selected build JDK: the local macOS build uses Temurin 21.0.13+9, while Windows CI resolves the latest available Temurin Java 21 for Windows using setup-java v5. Platform releases can arrive at different times. The exact JDK version is recorded in the build receipt. The engine image includes the full JDK module set and the Java command. This avoids guessing which modules existing extensions need.
+The engine's runtime lives in its installation, independently of the wizard. Both runtimes use the selected build JDK. CI resolves the latest Temurin Java 21 for each runner with setup-java v6. On Windows ARM64 the wizard uses an x64 JDK, because JavaFX 21 has no Windows ARM64 build; the engine runtime uses the ARM64 JDK. Platform releases can arrive at different times. The exact JDK version is recorded in the build receipt. The engine image includes the full JDK module set and the Java command. This avoids guessing which modules existing extensions need.
 
 ## Native launcher behavior
 

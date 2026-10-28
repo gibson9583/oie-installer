@@ -136,6 +136,15 @@ final class Services {
             if (kind.startsWith("systemd")) Model.command("systemctl", "daemon-reload");
         }
     }
+    static void start(Path home, JsonNode record) throws Exception {
+        verifyRecord(home, record); String kind = record.path("kind").asText(), name = record.path("name").asText();
+        if (kind.equals("windows") || kind.equals("install4j-windows")) Model.command("sc.exe", "start", name);
+        else if (kind.contains("launchd")) {
+            String domain = kind.equals("launchd") ? "gui/" + Privileges.invokingUid() : "system";
+            try { Model.command("launchctl", "print", domain + "/" + name); Model.command("launchctl", "kickstart", domain + "/" + name); }
+            catch (IOException notLoaded) { Model.command("launchctl", "bootstrap", domain, record.path("file").asText()); }
+        } else Model.command("systemctl", kind.equals("systemd") ? "--user" : "--system", "start", name);
+    }
     private static String queryWindowsBinary(String name) throws Exception {
         String script = "$s=Get-CimInstance Win32_Service -Filter " + Privileges.powershell("Name='" + name.replace("'", "''") + "'")
                 + "; if($s){$p=$s.PathName.Trim(); if($p.StartsWith('\"')){$p.Split('\"')[1]}else{($p -split '\\s+')[0]}}";

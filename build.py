@@ -48,7 +48,10 @@ def fail(message: str) -> None:
 
 
 def get(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "oie-installer-build"})
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "oie-installer-build"}
+    if url.startswith("https://api.github.com/") and os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
@@ -69,9 +72,14 @@ def cache_dir() -> Path:
 
 def host_platform() -> str:
     if sys.platform == "win32":
-        import platform
-        return "windows-arm64" if platform.machine().lower() in ("arm64", "aarch64") else "windows-x64"
+        return "windows-arm64" if machine() == "arm64" else "windows-x64"
     return "unix"
+
+
+def machine() -> str:
+    """The hardware architecture, also when an x64 Python runs emulated on Windows ARM64."""
+    name = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE") if sys.platform == "win32" else host.machine()
+    return "arm64" if (name or "").lower() in ("arm64", "aarch64") else "x64"
 
 
 def archive_name(version: str, platform: str) -> str:
@@ -219,6 +227,7 @@ def executable(java_home: Path, name: str) -> str:
 
 
 def native_payload(java_home: Path, env: dict) -> dict:
+    """java_home: the JDK whose jpackage and runtime become the engine's launchers and Java."""
     """Stage verified release files and a separate, native engine image at build time."""
     manifest = json.loads((PAYLOAD / "manifest.json").read_text())
     source = manifest.get("sourceArchive", {"name": manifest["archive"], "sha256": manifest["files"].get(manifest["archive"]), "size": manifest["size"]})
@@ -450,13 +459,15 @@ SectionEnd
     subprocess.run([compiler, "/V3", str(script)], check=True)
 
 
-def build_app(version: str, java_home: Path, package_type: str) -> None:
-    if not Path(executable(java_home, "jpackage")).is_file():
-        fail(f"{java_home} has no jpackage. Select a full JDK 21 or later with --java-home.")
+def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path) -> None:
+    for home in (java_home, engine_java_home):
+        if not Path(executable(home, "jpackage")).is_file():
+            fail(f"{home} has no jpackage. Select a full JDK 21 or later.")
     env = dict(os.environ, JAVA_HOME=str(java_home), PATH=str(java_home / "bin") + os.pathsep + os.environ.get("PATH", ""))
     print("Compiling the native JavaFX wizard (tests skipped)", flush=True)
-    subprocess.run(["mvn.cmd" if sys.platform == "win32" else "mvn", "-B", "-Dmaven.test.skip=true", "package"], cwd=ROOT, env=env, check=True)
-    native_payload(java_home, env)
+    maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
+    subprocess.run([maven, "-B", "-Dmaven.test.skip=true", "package"], cwd=ROOT, env=env, check=True)
+    native_payload(engine_java_home, dict(env, JAVA_HOME=str(engine_java_home)))
     target = ROOT / "target"
     inputs = target / "app-input"
     if inputs.exists():
@@ -502,24 +513,22 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
     if package_out.exists():
         shutil.rmtree(package_out)
     package_out.mkdir()
-    args = [executable(java_home, "jpackage"), "--type", package_type, "--app-image", str(image), "--name", APP_NAME,
-            "--app-version", version, "--dest", str(package_out), "--resource-dir", str(ROOT / "packaging")]
-    if sys.platform == "darwin":
-        args += ["--mac-package-name", "OIE Installer"]
-    elif sys.platform == "win32":
-        args += ["--win-menu", "--win-shortcut", "--win-upgrade-uuid", "649c44c5-2d75-44d5-a3dc-d79ee02c4641"]
     if sys.platform == "darwin" and package_type == "dmg":
         macos_dmg(image, package_out / (APP_NAME + "-" + version + ".dmg"))
     elif sys.platform == "win32" and package_type == "exe":
         windows_bootstrap(image, package_out / "OIE-Installer.exe", version)
+    elif package_type == "tar.gz":
+        # Like install4j's Unix media: a self-contained folder; run its bin launcher as root.
+        with tarfile.open(package_out / (APP_NAME + ".tar.gz"), "w:gz") as archive:
+            archive.add(image, arcname=image.name)
     else:
-        subprocess.run(args, cwd=ROOT, env=env, check=True)
+        fail(f"{package_type} packages are not built on {sys.platform}")
     out = ROOT / "dist"
     out.mkdir(exist_ok=True)
-    architecture = "arm64" if host.machine().lower() in ("aarch64", "arm64") else "x64"
+    architecture = machine()
     packages = list(package_out.glob("*." + package_type))
     if not packages:
-        fail("jpackage produced no " + package_type + " package")
+        fail("Packaging produced no " + package_type + " package")
     for package in packages:
         if package_type == "dmg":
             verify_macos_dmg(package)
@@ -536,6 +545,7 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
         destination.with_name(destination.name + ".sha256").write_text(f"{digest}  {destination.name}\n")
         print(f"Built {destination}\nSHA-256: {digest}", flush=True)
     receipt = {"engineVersion": version, "javaHome": str(java_home), "javaVersion": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
+               "engineJavaHome": str(engine_java_home), "engineJavaVersion": subprocess.check_output([executable(engine_java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
                "javafxVersion": "21.0.13", "architecture": architecture, "application": str(image), "testsRun": False}
     (out / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
@@ -545,10 +555,12 @@ def main() -> int:
     parser.add_argument("--version", default="latest", help="Engine release (default: latest published)")
     parser.add_argument("--engine-repo", type=Path, default=ROOT.parent / "oie", help="Engine clone containing the release tag")
     parser.add_argument("--java-home", type=Path, help="JDK 21+ used to compile and bundle the installer runtime")
+    parser.add_argument("--engine-java-home", type=Path, help="JDK 21+ bundled as the engine runtime (default: --java-home). "
+                        "Windows ARM64 uses an x64 JDK for the wizard, because JavaFX 21 has no Windows ARM64 build, and an ARM64 JDK here")
     parser.add_argument("--refresh", action="store_true", help="Download release assets again rather than reusing verified cache entries")
     parser.add_argument("--payload-only", action="store_true", help="Prepare the pinned payload and stop")
     parser.add_argument("--app-only", action="store_true", help="Reuse the existing pinned payload and rebuild the app")
-    parser.add_argument("--type", default="dmg" if sys.platform == "darwin" else "exe" if sys.platform == "win32" else "deb", choices=["app-image", "dmg", "pkg", "exe", "msi", "deb", "rpm"])
+    parser.add_argument("--type", default="dmg" if sys.platform == "darwin" else "exe" if sys.platform == "win32" else "tar.gz", choices=["app-image", "dmg", "exe", "tar.gz"])
     args = parser.parse_args()
     if args.app_only:
         version = json.loads((PAYLOAD / "manifest.json").read_text())["version"]
@@ -568,7 +580,7 @@ def main() -> int:
             if not executable:
                 fail("Install a JDK 21+ and pass --java-home")
             java_home = Path(executable).resolve().parent.parent
-    build_app(version, java_home.resolve(), args.type)
+    build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve())
     return 0
 
 

@@ -345,6 +345,7 @@ public final class Wizard extends Application {
         page.getChildren().add(panel(new HBox(18, a, b)));
     }
     private static final Map<String, String> JDBC = Map.of("postgres", "jdbc:postgresql://localhost:5432/mirthdb", "mysql", "jdbc:mysql://localhost:3306/mirthdb", "sqlserver", "jdbc:sqlserver://localhost:1433;databaseName=mirthdb", "oracle", "jdbc:oracle:thin:@localhost:1521:DB");
+    private static final Map<String, String> DATABASE_NAMES = Map.of("derby", "Derby", "postgres", "PostgreSQL", "mysql", "MySQL", "sqlserver", "SQL Server", "oracle", "Oracle");
     private RadioButton option(String title, String description, String path, String badge) {
         Label name = message(title, "option-title"); HBox.setHgrow(name, Priority.ALWAYS);
         HBox heading = new HBox(8, name); heading.setAlignment(Pos.CENTER_LEFT); if (!badge.isEmpty()) heading.getChildren().add(label(badge, "tag"));
@@ -361,10 +362,9 @@ public final class Wizard extends Application {
         choices.prefTileWidthProperty().bind(javafx.beans.binding.Bindings.createDoubleBinding(() -> {
             double width = choices.getWidth(); int columns = Math.max(1, (int)((width + 10) / 210)); return Math.max(180, Math.floor((width - (columns - 1) * 10) / columns));
         }, choices.widthProperty()));
-        Map<String, String> names = Map.of("derby", "Derby", "postgres", "PostgreSQL", "mysql", "MySQL", "sqlserver", "SQL Server", "oracle", "Oracle");
         Map<String, String> descriptions = Map.of("derby", "Built in. No setup.", "postgres", "Recommended for production.", "mysql", "MySQL 8 or MariaDB.", "sqlserver", "Microsoft SQL Server.", "oracle", "Oracle Database.");
         for (String id : Model.DATABASES) {
-            RadioButton choice = option(names.get(id), descriptions.get(id), "", id.equals("derby") ? "Default" : ""); choice.getStyleClass().add("database-option");
+            RadioButton choice = option(DATABASE_NAMES.get(id), descriptions.get(id), "", id.equals("derby") ? "Default" : ""); choice.getStyleClass().add("database-option");
             choice.setToggleGroup(group); choice.setSelected(form.get("database").equals(id));
             choice.setOnAction(e -> { form.put("database", id); if (!id.equals("derby")) url.setText(JDBC.get(id)); external.setVisible(!id.equals("derby")); updateNext(); });
             choices.getChildren().add(choice);
@@ -439,7 +439,7 @@ public final class Wizard extends Application {
         row(grid, i++, "Java", form.get("javaCmd").equals(Model.BUNDLED) ? "Bundled Java 21 · installed with the engine" : form.get("javaCmd"), "java");
         if (mode.equals("new")) {
             row(grid, i++, "Ports", "HTTPS " + form.get("httpsPort") + " · HTTP " + form.get("httpPort"), "network");
-            row(grid, i++, "Database", form.get("database") + (form.get("database").equals("derby") ? "" : " · " + form.get("databaseUrl")), "database");
+            row(grid, i++, "Database", DATABASE_NAMES.get(form.get("database")) + (form.get("database").equals("derby") ? "" : " · " + form.get("databaseUrl")), "database");
             row(grid, i++, "Sign in", "admin with the password from the Administrator step", "admin");
         }
         row(grid, i++, "Startup", service ? Services.supported() + " system service · starts at boot" : "Start once now", "service");
@@ -549,9 +549,12 @@ public final class Wizard extends Application {
         VBox details;
         if (serviceNode != null && !serviceNode.isNull()) details = panel(label("Service · " + serviceNode.path("kind").asText(), "section-title"),
                 commandRow("Start", serviceNode.path("start").asText()), commandRow("Stop", serviceNode.path("stop").asText()));
-        else details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ".", "muted"),
-                commandRow("Start", Model.WINDOWS ? "& " + Privileges.powershell(Path.of(String.valueOf(result.get("home"))).resolve("oieserver.exe").toString())
-                        : FilesSupport.quote(Path.of(String.valueOf(result.get("home"))).resolve("oieserver").toString())));
+        else {
+            String launcher = Path.of(String.valueOf(result.get("home"))).resolve(Model.WINDOWS ? "oieservice.exe" : "oieservice").toString();
+            String command = Model.WINDOWS ? "& " + Privileges.powershell(launcher) : FilesSupport.quote(launcher);
+            details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ".", "muted"),
+                    commandRow("Start", command + " start"), commandRow("Stop", command + " stop"));
+        }
         details.getChildren().add(commandRow("Remove", String.valueOf(result.get("uninstall")))); details.setSpacing(9); return details;
     }
     private TextField commandValue(String value) {

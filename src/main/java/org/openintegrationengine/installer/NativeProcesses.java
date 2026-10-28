@@ -6,8 +6,10 @@ import java.time.Instant;
 import java.util.*;
 
 final class NativeProcesses {
-    static long start(Path home, Payload payload) throws Exception {
-        Path launcher = payload.launcher(home, "oieserver"); Files.createDirectories(home.resolve("logs"));
+    private static final String START_MENU = "(Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs\\Open Integration Engine')";
+    static long start(Path home, Payload payload) throws Exception { return start(home, payload.launcher(home, "oieserver")); }
+    static long start(Path home, Path launcher) throws Exception {
+        Files.createDirectories(home.resolve("logs"));
         if (Model.WINDOWS) {
             String script = "$ErrorActionPreference='Stop'; (New-Object -ComObject Shell.Application).ShellExecute("
                     + Privileges.powershell(launcher.toString()) + ",''," + Privileges.powershell(home.toString()) + ",'open',0)";
@@ -90,6 +92,10 @@ final class NativeProcesses {
                     + "New-ItemProperty $k UninstallString -Value " + Privileges.powershell("\"" + home.resolve("oie-uninstall.exe") + "\"") + " -PropertyType String -Force | Out-Null; "
                     + "New-ItemProperty $k NoModify -Value 1 -PropertyType DWord -Force | Out-Null; New-ItemProperty $k NoRepair -Value 1 -PropertyType DWord -Force | Out-Null";
             Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(register));
+            // The install4j program group: the command line under the product name, and the uninstaller.
+            String menu = "$ErrorActionPreference='Stop'; $engine=" + Privileges.powershell(home.toString()) + "; $menu=" + START_MENU + "; New-Item -ItemType Directory -Path $menu -Force | Out-Null; $shell=New-Object -ComObject WScript.Shell; "
+                    + "foreach($entry in @(@('Open Integration Engine','oiecommand.exe'),@('Uninstall Open Integration Engine','oie-uninstall.exe'))){ $link=$shell.CreateShortcut((Join-Path $menu ($entry[0]+'.lnk'))); $link.TargetPath=(Join-Path $engine $entry[1]); $link.WorkingDirectory=$engine; $link.IconLocation=(Join-Path $engine 'oieserver.exe'); $link.Save() }";
+            Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(menu));
         } else {
             String invoke = FilesSupport.quote(java.toString()) + " -cp " + FilesSupport.quote(classpath) + " " + Main.class.getName() + " --uninstall " + FilesSupport.quote(home.toString()) + " --yes";
             String script = """
@@ -134,7 +140,10 @@ final class NativeProcesses {
         Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
     }
     static void windowsRemove(Path home) throws Exception {
-        String remove = "Remove-Item -LiteralPath " + Privileges.powershell(registryKey(home)) + " -Recurse -Force -ErrorAction SilentlyContinue";
+        String remove = "Remove-Item -LiteralPath " + Privileges.powershell(registryKey(home)) + " -Recurse -Force -ErrorAction SilentlyContinue; "
+                + "$engine=" + Privileges.powershell(home.toString()) + "; $menu=" + START_MENU + "; $shell=New-Object -ComObject WScript.Shell; "
+                + "foreach($file in @(Get-ChildItem -LiteralPath $menu -Filter *.lnk -ErrorAction SilentlyContinue)){ if($shell.CreateShortcut($file.FullName).TargetPath.StartsWith($engine+'\\',[StringComparison]::OrdinalIgnoreCase)){ Remove-Item -LiteralPath $file.FullName -Force } }; "
+                + "if((Test-Path -LiteralPath $menu) -and -not (Get-ChildItem -LiteralPath $menu)){ Remove-Item -LiteralPath $menu -Force }";
         Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(remove));
         Path script = Files.createTempFile("oie-uninstall-", ".ps1"); Json.privateFile(script);
         String cleanup = """
