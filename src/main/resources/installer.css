@@ -135,6 +135,9 @@
 .error-mark { -fx-border-color: -oie-error; }
 .text-area { -fx-text-fill: -oie-text; -fx-control-inner-background: -oie-input; }
 .text-area .content { -fx-background-color: -oie-input; }
+.text-area.license-text { -fx-font-family: "Inter"; -fx-font-size: 12px; -fx-background-color: -oie-input; -fx-background-insets: 0; -fx-border-color: -oie-line-strong; -fx-border-radius: 8; -fx-background-radius: 8; -fx-highlight-fill: -oie-accent; -fx-highlight-text-fill: -oie-accent-ink; }
+.text-area.license-text:focused { -fx-border-color: -oie-accent; }
+.license-text .content { -fx-padding: 12 14; }
 .titled-pane > .title { -fx-background-color: -oie-hover; }
 .titled-pane > *.content { -fx-background-color: -oie-input; -fx-border-color: -oie-line; }
 .scroll-bar { -fx-background-color: transparent; }

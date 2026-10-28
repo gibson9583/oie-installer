@@ -8,11 +8,11 @@ This repository is independent of the Tauri app. It does not invoke Rust, Tauri,
 
 New installation:
 
-**Welcome → Location → Java → Network → Database → Administrator → Service → Add-ons → Review → Install → Done**
+**Welcome → License → Location → Java → Network → Database → Administrator → Service → Add-ons → Review → Install → Done**
 
 Upgrade or reinstall:
 
-**Welcome → Location → Java → Service → Add-ons → Review → Install → Done**
+**Welcome → License → Location → Java → Service → Add-ons → Review → Install → Done**
 
 The destination determines the operation. A matching installed version means reinstall; an older engine means upgrade. Downgrades are refused. The wizard follows the existing installer’s dark/light palette, fonts and banner artwork, circular sidebar markers, sliding switches, Java/database selection cards, version badges, configuration fields, review/edit navigation and progress details. Controls use JavaFX skins while preserving native keyboard and accessibility behavior. Page and switch transitions can be disabled with the JVM option `-Doie.reduceMotion=true`.
 
@@ -24,7 +24,7 @@ The three bundled add-ons all default to **install**, independently selectable:
 
 Review lists each choice. On upgrade or reinstall, selected add-ons replace their old directories after backing them up. Skipped add-ons remain installed if already present. Skipping does not uninstall them or guarantee that their existing versions support the new engine.
 
-Welcome keeps hashes and archive/launcher provenance in collapsed Package details. Done follows the Tauri layout with a success mark, Address beside Sign in or Backup, full-width lifecycle commands and Folder, and a right-aligned Close action. Both header columns share one border line.
+Welcome keeps hashes and archive/launcher provenance in collapsed Package details. License is a separate second step displaying the bundled MPL 2.0 terms; acceptance is required before continuing to Location. Done follows the Tauri layout with a success mark, Address beside Sign in or Backup, full-width lifecycle commands and Folder, and a right-aligned Close action. Both header columns share one border line.
 
 See [packaging and service comparison](PACKAGING.md) for the current OIE install4j configuration, staged payloads, native launchers and system-service behavior.
 
@@ -65,7 +65,7 @@ Native outputs (platform builds run on that platform):
 
 Windows EXEs use an NSIS self-extracting wrapper around the jpackage app image, so the first screen is the JavaFX wizard. NSIS 3 is a Windows build prerequisite. GitHub Actions builds the Windows distribution in the user-designated private repository, with tests skipped. The workflow downloads verified engine/add-on releases during the build.
 
-The build explicitly ad-hoc signs the macOS application and verifies its signature and DMG before handoff. Developer ID signing and notarization are still needed for public distribution. The DMG layout script avoids requesting Finder Automation access.
+The build explicitly ad-hoc signs the macOS application, wraps the finished jpackage image with `hdiutil`, and verifies its signature and every payload hash inside the DMG before handoff. Developer ID signing and notarization are still needed for public distribution. DMG creation does not request Finder Automation access.
 
 The build JDK becomes the installer’s bundled runtime. Use a currently patched JDK when rebuilding; jpackage does not update that embedded runtime later. The current local distribution was built using Temurin 21.0.13+9 and JavaFX 21.0.13.
 

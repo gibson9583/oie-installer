@@ -23,7 +23,7 @@ import java.util.prefs.Preferences;
 /** Native JavaFX controls; no embedded browser, JavaScript bridge or localhost UI server. */
 public final class Wizard extends Application {
     private static final Map<String, String> NAMES = Map.ofEntries(
-            Map.entry("welcome", "Welcome"), Map.entry("location", "Location"), Map.entry("java", "Java"), Map.entry("network", "Network"),
+            Map.entry("welcome", "Welcome"), Map.entry("license", "License"), Map.entry("location", "Location"), Map.entry("java", "Java"), Map.entry("network", "Network"),
             Map.entry("database", "Database"), Map.entry("admin", "Administrator"), Map.entry("service", "Service"), Map.entry("plugins", "Add-ons"),
             Map.entry("review", "Review"), Map.entry("install", "Install"), Map.entry("done", "Done"));
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> { Thread thread = new Thread(r, "oie-installer-worker"); thread.setDaemon(true); return thread; });
@@ -48,7 +48,7 @@ public final class Wizard extends Application {
     private Model.Destination destination;
     private String current = "welcome", mode = "new", checkedPath = "", verifiedJava = "";
     private String locationError = "", javaError = "", installError = "";
-    private boolean locationBusy, javaBusy, service = true, running, done, light, licenseAccepted;
+    private boolean locationBusy, javaBusy, service = true, running, done, light, licenseAccepted, licenseLoaded;
     private long locationGeneration, javaGeneration;
     private Label locationStatus, javaStatus;
     private VBox existingPanel;
@@ -123,7 +123,7 @@ public final class Wizard extends Application {
     private Image brandAsset(boolean white) { return new Image(Objects.requireNonNull(getClass().getResourceAsStream("/assets/brand-" + (white ? "white" : "dark") + ".png"))); }
     private ImageView brandImage(boolean white, double width) { ImageView view = new ImageView(brandAsset(white)); view.setFitWidth(width); view.setPreserveRatio(true); return view; }
     private List<String> steps() {
-        List<String> ids = new ArrayList<>(List.of("welcome", "location", "java"));
+        List<String> ids = new ArrayList<>(List.of("welcome", "license", "location", "java"));
         if (mode.equals("new")) ids.addAll(List.of("network", "database", "admin"));
         ids.addAll(List.of("service", "plugins", "review", "install", "done")); return ids;
     }
@@ -140,7 +140,8 @@ public final class Wizard extends Application {
             Button button = new Button(); button.setGraphic(content); button.setAccessibleText(NAMES.get(id));
             button.setMaxWidth(Double.MAX_VALUE); button.getStyleClass().add("step");
             if (id.equals(current)) button.getStyleClass().add("active-step");
-            button.setDisable(running || done || !visited.contains(id) || id.equals("install") || id.equals("done"));
+            button.setDisable(running || done || !visited.contains(id) || id.equals("install") || id.equals("done")
+                    || i > ids.indexOf("license") && (!licenseAccepted || !licenseLoaded));
             button.setOnAction(e -> show(steps().get(index))); rail.getChildren().add(button);
         }
     }
@@ -150,7 +151,7 @@ public final class Wizard extends Application {
         footer.setVisible(!id.equals("install") && !id.equals("done")); footer.setManaged(footer.isVisible());
         title.setText(id.equals("review") ? "Review and " + verb().toLowerCase() : id.equals("plugins") ? "Choose add-ons" : NAMES.get(id));
         switch (id) {
-            case "welcome" -> welcome(); case "location" -> location(); case "java" -> java(); case "network" -> network();
+            case "welcome" -> welcome(); case "license" -> license(); case "location" -> location(); case "java" -> java(); case "network" -> network();
             case "database" -> database(); case "admin" -> admin(); case "service" -> service(); case "plugins" -> plugins();
             case "review" -> review(); case "install" -> progress(); case "done" -> complete();
         }
@@ -162,8 +163,9 @@ public final class Wizard extends Application {
     }
     private boolean canNext() {
         if (running || done || payload == null) return false;
+        if (!current.equals("welcome") && !current.equals("license") && (!licenseAccepted || !licenseLoaded)) return false;
         return switch (current) {
-            case "welcome" -> licenseAccepted;
+            case "license" -> licenseAccepted && licenseLoaded;
             case "location" -> !locationBusy && destination != null && checkedPath.equals(form.get("installDir")) && locationError.isEmpty();
             case "java" -> !javaBusy && !verifiedJava.isEmpty() && verifiedJava.equals(form.get("javaCmd"));
             case "network" -> validPort("httpPort") && validPort("httpsPort") && !form.get("httpPort").equals(form.get("httpsPort"));
@@ -221,10 +223,6 @@ public final class Wizard extends Application {
                 new Separator(), label("Choose your add-ons", "option-title"),
                 message("OIE Web Client, Role-Based Access Control and Simple Channel History are included. All three are selected by default; you can change each choice before installing.", "intro"));
         page.getChildren().add(introduction);
-        CheckBox accept = new CheckBox("Accept the Mozilla Public License 2.0"); accept.setSelected(licenseAccepted);
-        accept.setOnAction(e -> { licenseAccepted = accept.isSelected(); updateNext(); });
-        Hyperlink license = new Hyperlink("Read license"); license.setOnAction(e -> showLicense());
-        HBox licenseRow = new HBox(12, accept, license); licenseRow.setAlignment(Pos.CENTER_LEFT); page.getChildren().add(licenseRow);
         GridPane provenance = grid();
         row(provenance, 0, "Release source", payload.manifest.path("archive").asText(), null);
         row(provenance, 1, "Payload size", Math.round(payload.size() / 1048576.0) + " MB", null);
@@ -234,15 +232,19 @@ public final class Wizard extends Application {
         TitledPane details = new TitledPane("Package details", provenance); details.setExpanded(false); details.getStyleClass().add("package-details");
         page.getChildren().add(details);
     }
-    private void showLicense() {
+    private void license() {
+        heading("License terms", "Read the Mozilla Public License 2.0 below. Accept the terms to continue.");
+        licenseLoaded = false;
         try (var input = getClass().getResourceAsStream("/LICENSE.txt")) {
             if (input == null) throw new java.io.IOException("The bundled license is missing.");
-            TextArea text = new TextArea(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)); text.setEditable(false); text.setWrapText(true); text.setPrefSize(680, 460);
-            Dialog<Void> dialog = new Dialog<>(); dialog.initOwner(stage); dialog.setTitle("Mozilla Public License 2.0");
-            dialog.getDialogPane().setContent(text); dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-            dialog.getDialogPane().getStylesheets().add(getClass().getResource("/installer.css").toExternalForm()); dialog.getDialogPane().getStyleClass().add("app");
-            if (light) dialog.getDialogPane().getStyleClass().add("light"); dialog.showAndWait();
-        } catch (java.io.IOException error) { globalError.setText(error.getMessage()); }
+            TextArea text = new TextArea(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+            text.setEditable(false); text.setWrapText(true); text.setMinHeight(180); text.setPrefHeight(280); text.setMaxHeight(360);
+            text.getStyleClass().add("license-text"); text.setAccessibleText("Mozilla Public License 2.0 license terms");
+            CheckBox accept = new CheckBox("I accept the terms of the Mozilla Public License 2.0.");
+            accept.setWrapText(true); accept.setSelected(licenseAccepted);
+            accept.setOnAction(e -> { licenseAccepted = accept.isSelected(); rail(); updateNext(); });
+            page.getChildren().addAll(text, accept); licenseLoaded = true;
+        } catch (java.io.IOException error) { licenseAccepted = false; globalError.setText(error.getMessage()); }
     }
     private void location() {
         heading("Where is the engine?", "Select a new or empty folder for a new engine. To upgrade, select the folder of the engine you have now.");
@@ -457,7 +459,7 @@ public final class Wizard extends Application {
                 Platform.runLater(() -> { running = false; done = true; result = completed; show("done"); });
             } catch (Exception e) { Platform.runLater(() -> {
                 running = false; installError = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                destination = null; checkedPath = ""; visited.retainAll(Set.of("welcome", "location"));
+                destination = null; checkedPath = ""; visited.retainAll(Set.of("welcome", "license", "location"));
                 page.getChildren().addAll(message(installError, "error"), message("Any completed changes and backups remain in the engine folder. Resolve the problem and check the location before trying again. Database migrations are not automatically rolled back.", "muted"),
                         button("Check location again", () -> { done = false; show("location"); }));
                 rail();

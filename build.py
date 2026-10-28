@@ -25,6 +25,7 @@ import urllib.request
 import zipfile
 import tarfile
 import stat
+import tempfile
 import xml.etree.ElementTree as ET
 import platform as host
 from pathlib import Path
@@ -376,6 +377,43 @@ def link_or_copy(source: Path, target: Path) -> None:
         shutil.copyfile(source, target)
 
 
+def verify_packaged_payload(directory: Path) -> None:
+    """Check the pinned bytes after packaging/signing, without installing the engine."""
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    files = manifest["files"]
+    if not files:
+        fail("The packaged payload has no pinned files")
+    for name, expected in files.items():
+        path = directory / name
+        if path.is_symlink() or not path.is_file() or sha256_file(path) != expected:
+            fail("Packaging changed or omitted a pinned payload file: " + name)
+    print(f"Verified all {len(files)} pinned files in {directory}", flush=True)
+
+
+def verify_macos_dmg(package: Path) -> None:
+    subprocess.run(["hdiutil", "verify", str(package)], check=True, stdout=subprocess.DEVNULL)
+    with tempfile.TemporaryDirectory(prefix="oie-installer-dmg-") as temporary:
+        mount = Path(temporary) / "mounted"
+        attached = False
+        try:
+            subprocess.run(["hdiutil", "attach", str(package), "-readonly", "-nobrowse", "-noautoopen",
+                            "-mountpoint", str(mount)], check=True, stdout=subprocess.DEVNULL)
+            attached = True
+            image = mount / (APP_NAME + ".app")
+            subprocess.run(["codesign", "--verify", "--deep", "--strict", str(image)], check=True)
+            verify_packaged_payload(image / "Contents/app/payload")
+        finally:
+            if attached:
+                subprocess.run(["hdiutil", "detach", str(mount)], check=True, stdout=subprocess.DEVNULL)
+
+
+def macos_dmg(image: Path, destination: Path) -> None:
+    # jpackage's DMG bundler re-signs ad-hoc app images recursively, changing
+    # the embedded engine. Wrap the final jpackage image without modifying it.
+    subprocess.run(["hdiutil", "create", "-quiet", "-srcfolder", str(image.parent),
+                    "-volname", APP_NAME, "-fs", "HFS+", "-format", "UDZO", str(destination)], check=True)
+
+
 def windows_bootstrap(image: Path, destination: Path, version: str) -> None:
     """Self-extract the jpackage image and open our wizard directly."""
     compiler = shutil.which("makensis.exe")
@@ -426,7 +464,8 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
     inputs.mkdir()
     shutil.copyfile(target / "oie-installer-jpackage.jar", inputs / "oie-installer-jpackage.jar")
     shutil.copytree(target / "lib", inputs / "lib")
-    shutil.copytree(PAYLOAD, inputs / "payload", copy_function=link_or_copy)
+    if sys.platform != "darwin":
+        shutil.copytree(PAYLOAD, inputs / "payload", copy_function=link_or_copy)
     image_out = target / "image"
     if image_out.exists():
         shutil.rmtree(image_out)
@@ -448,8 +487,14 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
     subprocess.run(args, cwd=ROOT, env=env, check=True)
     image = image_out / (APP_NAME + (".app" if sys.platform == "darwin" else ""))
     if sys.platform == "darwin":
+        # Sign the wizard before adding the already-signed, hash-pinned engine.
+        # Recursive signing after embedding it would invalidate its payload hashes.
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(image)], check=True)
+        shutil.copytree(PAYLOAD, image / "Contents/app/payload")
+        subprocess.run(["codesign", "--force", "--sign", "-", str(image)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(image)], check=True)
+    payload_in_image = image / "Contents/app/payload" if sys.platform == "darwin" else image / ("app/payload" if sys.platform == "win32" else "lib/app/payload")
+    verify_packaged_payload(payload_in_image)
     print(f"Built app: {image}", flush=True)
     if package_type == "app-image":
         return
@@ -463,7 +508,9 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
         args += ["--mac-package-name", "OIE Installer"]
     elif sys.platform == "win32":
         args += ["--win-menu", "--win-shortcut", "--win-upgrade-uuid", "649c44c5-2d75-44d5-a3dc-d79ee02c4641"]
-    if sys.platform == "win32" and package_type == "exe":
+    if sys.platform == "darwin" and package_type == "dmg":
+        macos_dmg(image, package_out / (APP_NAME + "-" + version + ".dmg"))
+    elif sys.platform == "win32" and package_type == "exe":
         windows_bootstrap(image, package_out / "OIE-Installer.exe", version)
     else:
         subprocess.run(args, cwd=ROOT, env=env, check=True)
@@ -475,7 +522,7 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
         fail("jpackage produced no " + package_type + " package")
     for package in packages:
         if package_type == "dmg":
-            subprocess.run(["hdiutil", "verify", str(package)], check=True, stdout=subprocess.DEVNULL)
+            verify_macos_dmg(package)
         platform_name = "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
         destination = out / f"OIE-Installer-JavaFX-{version}-{platform_name}-{architecture}.{package_type}"
         shutil.copyfile(package, destination)
