@@ -43,7 +43,12 @@ def run(command: list, expect: int | None = 0, timeout: int = 900) -> int:
         code = subprocess.run([str(part) for part in command], stdin=subprocess.DEVNULL, stdout=output,
                               stderr=subprocess.STDOUT, timeout=timeout).returncode
         output.seek(0)
-        print(output.read().decode("utf-8", "replace").rstrip(), flush=True)
+        data = output.read()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("cp1252" if WINDOWS else "latin-1", "replace")
+        print(text.rstrip(), flush=True)
     if expect is not None and code != expect:
         raise SystemExit(f"Expected exit {expect}, got {code}")
     return code
@@ -66,6 +71,28 @@ def port_open(port: int) -> bool:
         return False
 
 
+def diagnostics(home: Path) -> None:
+    """Print what an engine that did not start left behind."""
+    print(f"== Diagnostics for {home}", flush=True)
+    receipt = home / "oie-installer.json"
+    unit = ""
+    if receipt.is_file():
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        unit = ((data.get("service") or {}).get("name")) or ""
+        print(json.dumps({k: v for k, v in data.items() if k != "plugins"}, indent=2), flush=True)
+    for log in sorted((home / "logs").glob("*")) if (home / "logs").is_dir() else []:
+        if log.is_file():
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            print(f"--- {log} (last 60 lines)\n" + "\n".join(lines[-60:]), flush=True)
+    if unit and sys.platform.startswith("linux"):
+        run(["systemctl", "status", "--no-pager", unit], expect=None)
+        run(["journalctl", "--no-pager", "-n", "80", "-u", unit], expect=None)
+    elif unit and WINDOWS:
+        run(["sc.exe", "query", unit], expect=None)
+    elif unit and MAC:
+        run(["launchctl", "print", "system/" + unit], expect=None)
+
+
 def launcher(home: Path, name: str) -> Path:
     return home / (name + EXE)
 
@@ -80,6 +107,7 @@ def smoke(service: bool, http: int, https: int) -> None:
         plan.write_text(json.dumps({"installDir": str(home), "javaCmd": "@bundled", "httpPort": http, "httpsPort": https,
                                     "database": "derby", "adminPassword": password, "service": service}))
         classpath = os.pathsep.join([str(app / "oie-installer-jpackage.jar"), str(app / "lib" / "*")])
+        failed = False
         try:
             print(f"== {'Service' if service else 'Process'} install into {home}", flush=True)
             run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
@@ -112,18 +140,29 @@ def smoke(service: bool, http: int, https: int) -> None:
             wait(lambda: run(command, expect=None, timeout=180) == 0, "oiecommand", seconds=240)
             run([service_launcher, "restart"], expect=0)
             wait(lambda: run([service_launcher, "status"], expect=None) == 0, "restart")
+        except BaseException:
+            failed = True
+            if home.exists():
+                diagnostics(home)
+            raise
         finally:
             if launcher(home, "oie-uninstall").is_file():
                 print(f"== Uninstall {home}", flush=True)
                 run([launcher(home, "oie-uninstall"), "--yes"], expect=None)
                 # Windows removes the folder after the uninstaller exits.
-                wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+                try:
+                    wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+                except SystemExit as error:
+                    if not failed:
+                        raise
+                    print(error, flush=True)
     if WINDOWS and any(START_MENU.glob("*.lnk")):
         raise SystemExit("Start Menu entries remain after uninstall")
     print(f"== {'Service' if service else 'Process'} pass complete", flush=True)
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     smoke(True, 18080, 18443)
     smoke(False, 28080, 28443)
     return 0

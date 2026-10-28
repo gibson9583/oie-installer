@@ -69,7 +69,7 @@ final class Services {
             Path file = Path.of("/etc/systemd/system", name + ".service");
             FilesSupport.safeTarget(file.getParent(), file.getFileName().toString());
             Files.writeString(file, "[Unit]\nDescription=Open Integration Engine\nAfter=network-online.target\n\n[Service]\nType=simple\nUser=" + Privileges.invokingUser()
-                    + "\nWorkingDirectory=" + systemd(home.toString()) + "\nExecStart=" + systemd(home.resolve("oieservice").toString())
+                    + "\nWorkingDirectory=" + home.toString().replace("%", "%%") + "\nExecStart=" + systemd(home.resolve("oieservice").toString())
                     + "\nRestart=on-failure\nTimeoutStopSec=60\n\n[Install]\nWantedBy=multi-user.target\n");
             result.put("kind", "systemd-system").put("name", name + ".service").put("file", file.toString())
                     .put("start", "sudo systemctl start " + name).put("stop", "sudo systemctl stop " + name);
@@ -129,7 +129,9 @@ final class Services {
             catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
         } else {
             List<String> args = new ArrayList<>(List.of("systemctl")); if (kind.equals("systemd")) args.add("--user");
-            args.addAll(remove ? List.of("disable", "--now", name) : List.of("stop", name)); Model.command(args.toArray(String[]::new));
+            args.addAll(remove ? List.of("disable", "--now", name) : List.of("stop", name));
+            try { Model.command(args.toArray(String[]::new)); }
+            catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
         }
         if (remove) {
             if (record.hasNonNull("file")) Files.deleteIfExists(Path.of(record.path("file").asText()));
