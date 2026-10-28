@@ -127,7 +127,7 @@ final class Services {
         if (!name.equals(expectedName) || !Path.of(record.path("file").asText()).toAbsolutePath().normalize().equals(expected.toAbsolutePath().normalize())) throw new IOException("The recorded service does not belong to this engine.");
         if (kind.equals("windows")) {
             String actual = queryWindowsBinary(name);
-            if (!actual.isEmpty() && !actual.equalsIgnoreCase(home.resolve("oie-service.exe").toString())) throw new IOException("Another service uses this name.");
+            if (!actual.isEmpty() && !actual.equalsIgnoreCase(home.resolve("oie-service.exe").toString())) throw new IOException("Another service uses this name: " + name + " runs " + actual);
         }
     }
     static void stop(Path home, JsonNode record, boolean remove) throws Exception {
@@ -164,7 +164,9 @@ final class Services {
     private static String queryWindowsBinary(String name) throws Exception {
         String script = "$s=Get-CimInstance Win32_Service -Filter " + Privileges.powershell("Name='" + name.replace("'", "''") + "'")
                 + "; if($s){$p=$s.PathName.Trim(); if($p.StartsWith('\"')){$p.Split('\"')[1]}else{($p -split '\\s+')[0]}}";
-        return Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script)).strip();
+        String output = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+        String path = output.lines().map(String::strip).filter(line -> !line.isEmpty()).reduce((first, last) -> last).orElse("");
+        return path.startsWith("\\\\?\\") ? path.substring(4) : path;
     }
     static boolean running(Path home, JsonNode record) throws Exception {
         if (record == null || record.isNull()) return false;
