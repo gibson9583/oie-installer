@@ -20,7 +20,12 @@ final class NativeProcesses {
         }
         List<String> command = new ArrayList<>();
         if (Privileges.administrator() && !Privileges.invokingUser().equals("root")) command.addAll(List.of("/usr/bin/sudo", "-n", "-u", Privileges.invokingUser(), "--"));
-        command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
+        if (Model.MAC) {
+            // macOS nohup aborts when its private launchd console-detach call fails
+            // in a GUI/elevated helper session. Inherit ignored SIGHUP through exec;
+            // stdin and both output streams are already redirected below.
+            command.addAll(List.of("/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "oie-engine", launcher.toString()));
+        } else command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
         Process process = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(home.resolve("logs/oieserver.out").toFile())).redirectErrorStream(true).start();
         return process.pid();
@@ -58,7 +63,7 @@ final class NativeProcesses {
     }
     static String backendClasspath(Path home) {
         Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
-        return app.resolve("oie-installer-jpackage.jar") + File.pathSeparator + app.resolve("lib/*");
+        return app.resolve("oie-installer-jpackage.jar") + File.pathSeparator + app.resolve("lib") + File.separator + "*";
     }
     static void tools(Path home, Payload payload, String version) throws Exception {
         Path java = payload.engineJava(home); String classpath = backendClasspath(home);

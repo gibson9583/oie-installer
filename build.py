@@ -525,8 +525,14 @@ def build_app(version: str, java_home: Path, package_type: str) -> None:
             verify_macos_dmg(package)
         platform_name = "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
         destination = out / f"OIE-Installer-JavaFX-{version}-{platform_name}-{architecture}.{package_type}"
-        shutil.copyfile(package, destination)
-        digest = sha256_file(destination)
+        # Replace the artifact atomically: an older DMG may still be mounted.
+        partial = destination.with_name(destination.name + ".part")
+        try:
+            shutil.copyfile(package, partial)
+            digest = sha256_file(partial)
+            os.replace(partial, destination)
+        finally:
+            partial.unlink(missing_ok=True)
         destination.with_name(destination.name + ".sha256").write_text(f"{digest}  {destination.name}\n")
         print(f"Built {destination}\nSHA-256: {digest}", flush=True)
     receipt = {"engineVersion": version, "javaHome": str(java_home), "javaVersion": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),

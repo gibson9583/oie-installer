@@ -26,24 +26,25 @@ final class Privileges {
         if (!available() || administrator()) return new Installer(payload, events, log).run(plan);
         Path jobs = Model.userHome().resolve(".cache/oie-installer/jobs"); Files.createDirectories(jobs);
         Path job = Files.createTempDirectory(jobs, "install-");
-        if (Files.getFileStore(job).supportsFileAttributeView("posix")) Files.setPosixFilePermissions(job, PosixFilePermissions.fromString("rwx------"));
-        if (Model.WINDOWS) Model.command("icacls.exe", job.toString(), "/inheritance:r", "/grant:r", System.getProperty("user.name") + ":(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F");
-        ObjectNode input = Json.object();
-        input.put("installDir", plan.home().toString()).put("javaCmd", plan.javaCmd()).put("httpPort", plan.httpPort()).put("httpsPort", plan.httpsPort())
-                .put("database", plan.database()).put("databaseUrl", plan.databaseUrl()).put("databaseUsername", plan.databaseUsername()).put("databasePassword", plan.databasePassword())
-                .put("adminPassword", plan.adminPassword()).put("service", plan.service()).put("expectedMode", plan.expectedMode()).put("expectedVersion", plan.expectedVersion());
-        input.set("plugins", Json.MAPPER.valueToTree(plan.plugins()));
-        input.put("invokingHome", Model.userHome().toString()).put("invokingUser", invokingUser());
-        if (!Model.WINDOWS) input.put("invokingUid", Model.command("id", "-u"));
-        Json.write(job.resolve("plan.json"), input);
-        for (String file : List.of("events.jsonl", "outcome.json", "helper.log")) { Files.createFile(job.resolve(file)); Json.privateFile(job.resolve(file)); }
-        Path code = Path.of(Main.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-        String classpath = code + File.pathSeparator + code.resolveSibling("lib").resolve("*");
-        Path java = Path.of(System.getProperty("java.home"), "bin", Model.WINDOWS ? "java.exe" : "java");
-        if (!Files.isRegularFile(java)) { FilesSupport.deleteTree(job); throw new IOException("The installer runtime must include its Java command for the privileged helper. Rebuild with the current packaging script."); }
-        List<String> command = List.of(java.toString(), "-Doie.payload=" + payload.dir, "-cp", classpath, Main.class.getName(), "--elevated-install", job.toString());
         Process elevation = null;
         try {
+            if (Files.getFileStore(job).supportsFileAttributeView("posix")) Files.setPosixFilePermissions(job, PosixFilePermissions.fromString("rwx------"));
+            if (Model.WINDOWS) Model.command("icacls.exe", job.toString(), "/inheritance:r", "/grant:r", System.getProperty("user.name") + ":(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F");
+            ObjectNode input = Json.object();
+            input.put("installDir", plan.home().toString()).put("javaCmd", plan.javaCmd()).put("httpPort", plan.httpPort()).put("httpsPort", plan.httpsPort())
+                    .put("database", plan.database()).put("databaseUrl", plan.databaseUrl()).put("databaseUsername", plan.databaseUsername()).put("databasePassword", plan.databasePassword())
+                    .put("adminPassword", plan.adminPassword()).put("service", plan.service()).put("expectedMode", plan.expectedMode()).put("expectedVersion", plan.expectedVersion());
+            input.set("plugins", Json.MAPPER.valueToTree(plan.plugins()));
+            input.put("invokingHome", Model.userHome().toString()).put("invokingUser", invokingUser());
+            if (!Model.WINDOWS) input.put("invokingUid", Model.command("id", "-u"));
+            Json.write(job.resolve("plan.json"), input);
+            for (String file : List.of("events.jsonl", "outcome.json", "helper.log")) { Files.createFile(job.resolve(file)); Json.privateFile(job.resolve(file)); }
+            Path code = Path.of(Main.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+            // The wildcard is Java classpath syntax, not a Windows filesystem name.
+            String classpath = code + File.pathSeparator + code.resolveSibling("lib") + File.separator + "*";
+            Path java = Path.of(System.getProperty("java.home"), "bin", Model.WINDOWS ? "java.exe" : "java");
+            if (!Files.isRegularFile(java)) throw new IOException("The installer runtime must include its Java command for the privileged helper. Rebuild with the current packaging script.");
+            List<String> command = List.of(java.toString(), "-Doie.payload=" + payload.dir, "-cp", classpath, Main.class.getName(), "--elevated-install", job.toString());
             if (Model.MAC) {
                 String shell = String.join(" ", command.stream().map(FilesSupport::quote).toList()) + " >" + FilesSupport.quote(job.resolve("helper.log").toString()) + " 2>&1";
                 elevation = new ProcessBuilder("osascript", "-e", "with timeout of 3600 seconds\n do shell script " + apple(shell) + " with administrator privileges\nend timeout").redirectErrorStream(true).start();

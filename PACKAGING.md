@@ -30,6 +30,8 @@ macOS uses a root-owned plist in `/Library/LaunchDaemons`, starting at boot unde
 
 Legacy install4j services are recognized only when their executable points to the selected engine folder. The existing service is stopped, its definition backed up, and its registration removed before replacement. Earlier launch agents/systemd user units are also recognized. Unknown or mismatched service ownership stops the operation.
 
+When service installation is disabled on macOS, a shell exec wrapper ignores SIGHUP and launches the native engine as the installing user, with stdin disconnected and stdout/stderr appended to `logs/oieserver.out`. It avoids macOS `nohup`, whose private launchd console-detach call can fail in a GUI/elevated helper session before executing the engine. See [Apple's nohup implementation](https://github.com/apple-oss-distributions/shell_cmds/blob/main/nohup/nohup.c).
+
 Windows registers an engine entry in Apps & Features with its own independent uninstaller. Removal stops the service/process, removes registration and waits for engine-owned executables before deleting locked files. macOS supplies an independent uninstaller using the installed engine runtime and backend.
 
 ## Package-manager distinction
