@@ -85,12 +85,20 @@ final class Services {
         } else if (Model.WINDOWS) {
             Model.command("icacls.exe", home.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/Q");
             if (service) Model.command("icacls.exe", home.toString(), "/grant:r", "*S-1-5-19:(OI)(CI)RX", "/Q");
+            inherit(home);
             for (String name : List.of("conf", "appdata", "logs", "backups")) {
                 Path folder = home.resolve(name); Files.createDirectories(folder);
                 List<String> args = new ArrayList<>(List.of("icacls.exe", folder.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", Privileges.invokingUser() + (service ? ":(OI)(CI)R" : ":(OI)(CI)M")));
                 if (service && !name.equals("backups")) args.add("*S-1-5-19:(OI)(CI)M");
-                args.addAll(List.of("/T", "/Q")); Model.command(args.toArray(String[]::new));
+                args.add("/Q"); Model.command(args.toArray(String[]::new));
+                inherit(folder);
             }
+        }
+    }
+    /** Replace the contents' ACLs with the folder's inheritable entries. icacls /T with /inheritance:r would leave files with empty ACLs. */
+    private static void inherit(Path folder) throws Exception {
+        try (var children = Files.list(folder)) {
+            for (Path child : children.toList()) Model.command("icacls.exe", child.toString(), "/reset", "/T", "/C", "/Q");
         }
     }
     static void verifyRecord(Path home, JsonNode record) throws Exception {

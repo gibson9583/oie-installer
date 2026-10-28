@@ -90,6 +90,7 @@ def diagnostics(home: Path) -> None:
     if WINDOWS:
         run(["whoami", "/user", "/groups"], expect=None)
         run(["icacls", home / "conf", "/T"], expect=None)
+        run(["icacls", home / "oieserver.exe"], expect=None)
     if unit and WINDOWS:
         run(["sc.exe", "query", unit], expect=None)
     elif unit and MAC:
