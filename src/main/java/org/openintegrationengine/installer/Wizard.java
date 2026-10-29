@@ -47,7 +47,7 @@ public final class Wizard extends Application {
     private List<Model.JavaRuntime> runtimes = List.of();
     private Model.Destination destination;
     private String current = "welcome", mode = "new", checkedPath = "", verifiedJava = "";
-    private String locationError = "", javaError = "", installError = "";
+    private String locationError = "", javaError = "", installError = "", serviceConflict = "";
     private boolean locationBusy, javaBusy, service = true, running, done, light, licenseAccepted, licenseLoaded;
     private long locationGeneration, javaGeneration;
     private Label locationStatus, javaStatus;
@@ -63,7 +63,7 @@ public final class Wizard extends Application {
             try (var input = getClass().getResourceAsStream("/fonts/" + font + ".ttf")) { if (input != null) Font.loadFont(input, 12); }
             catch (java.io.IOException ignored) {}
         }
-        this.stage = stage; stage.setTitle("Open Integration Engine Installer · JavaFX");
+        this.stage = stage; stage.setTitle("Open Integration Engine Installer");
         stage.setMinWidth(960); stage.setMinHeight(640);
         stage.getIcons().add(new Image(Objects.requireNonNull(getClass().getResourceAsStream("/assets/oie.png"))));
         root.getStyleClass().add("app"); light = preferences.getBoolean("light", false); applyTheme();
@@ -78,7 +78,7 @@ public final class Wizard extends Application {
                     payload = loaded; runtimes = java;
                     form.putAll(Map.of("installDir", Model.defaultHome().toString(), "httpPort", "" + http,
                             "httpsPort", "" + https, "database", "derby", "databaseUrl", "", "databaseUsername", "", "databasePassword", "", "adminPassword", Model.password()));
-                    String choice = loaded.nativeEngine() ? Model.BUNDLED : java.stream().filter(Model.JavaRuntime::supported).map(j -> j.path().toString()).findFirst().orElse("");
+                    String choice = loaded.nativeEngine() && loaded.bundledJava() ? Model.BUNDLED : java.stream().filter(Model.JavaRuntime::supported).map(j -> j.path().toString()).findFirst().orElse("");
                     form.put("javaCmd", choice); verifiedJava = choice;
                     Payload.IDS.forEach(id -> plugins.put(id, true));
                     shell(); show("welcome");
@@ -268,9 +268,9 @@ public final class Wizard extends Application {
     private void validateLocation() {
         String raw = form.get("installDir"); long generation = ++locationGeneration; locationBusy = true; updateNext();
         checks.submit(() -> {
-            try { var found = Model.destination(raw, payload); Platform.runLater(() -> {
+            try { var found = Model.destination(raw, payload); String conflict = Services.conflict(found.home()); Platform.runLater(() -> {
                 if (generation != locationGeneration || !raw.equals(form.get("installDir"))) return;
-                String previousMode = mode; destination = found; mode = found.mode(); checkedPath = raw; locationError = ""; locationBusy = false;
+                String previousMode = mode; destination = found; mode = found.mode(); checkedPath = raw; locationError = ""; locationBusy = false; serviceConflict = conflict;
                 if (!mode.equals(previousMode) && found.existing() != null) {
                     service = found.existing().service() != null && !found.existing().service().isNull();
                     if (!found.existing().javaCmd().isBlank()) {
@@ -303,13 +303,14 @@ public final class Wizard extends Application {
                 message("The installer backs up conf/ and appdata/, replaces program files and keeps your configuration, database, logs, custom libraries and other extensions.", "muted")));
     }
     private void java() {
-        heading("Which Java runtime runs the engine?", "The engine includes its own Java 21 runtime. Use it, or choose an installed Java 17 or later.");
+        heading("Which Java runtime runs the engine?", payload.bundledJava() ? "The engine includes its own Java 21 runtime. Use it, or choose an installed Java 17 or later."
+                : "This installer does not include Java. Choose an installed Java 17 or later, or use the -with-JRE installer.");
         ToggleGroup group = new ToggleGroup(); VBox choices = new VBox(10); Map<String, RadioButton> known = new LinkedHashMap<>();
         TextField path = input("javaCmd"); path.setPromptText("/path/to/jdk/bin/java");
         javaStatus = message("", "muted"); VBox custom = panel(field("Path to Java", path, "Enter the path to its java executable."), javaStatus);
         custom.getStyleClass().add("custom-runtime"); custom.managedProperty().bind(custom.visibleProperty());
         boolean isCustom = !form.get("javaCmd").equals(Model.BUNDLED) && runtimes.stream().noneMatch(j -> j.path().toString().equals(form.get("javaCmd"))); custom.setVisible(isCustom);
-        if (payload.nativeEngine()) {
+        if (payload.nativeEngine() && payload.bundledJava()) {
             RadioButton bundled = option("Bundled Java 21", "Installed with the engine. Continues working after this installer is removed.", "", "Recommended");
             bundled.setToggleGroup(group); bundled.setSelected(form.get("javaCmd").equals(Model.BUNDLED));
             bundled.setOnAction(e -> { custom.setVisible(false); path.setText(Model.BUNDLED); }); choices.getChildren().add(bundled); known.put(Model.BUNDLED, bundled);
@@ -327,7 +328,7 @@ public final class Wizard extends Application {
     }
     private void validateJava() {
         String raw = form.get("javaCmd"); long generation = ++javaGeneration; javaBusy = true; updateNext();
-        if (raw.equals(Model.BUNDLED) && payload.nativeEngine()) {
+        if (raw.equals(Model.BUNDLED) && payload.nativeEngine() && payload.bundledJava()) {
             javaBusy = false; javaError = ""; verifiedJava = raw; javaStatus.setText("Use the engine's bundled Java 21 runtime."); updateNext(); return;
         }
         checks.submit(() -> { var java = raw.isBlank() ? null : Model.probe(Model.expand(raw)); Platform.runLater(() -> {
@@ -372,21 +373,22 @@ public final class Wizard extends Application {
         page.getChildren().addAll(choices, external, message("The installer does not test an external database connection.", "muted"));
     }
     private void admin() {
-        heading("Set the administrator password", "The engine sets this password on the admin user when it creates its database. The installer removes it from the settings file after the first sign-in.");
+        heading("Set the administrator password", "The engine sets this password on the admin user when it creates its database. The installer removes it from the settings file once the engine has started.");
         TextField user = new TextField("admin"); user.setEditable(false);
         page.getChildren().add(panel(field("Username", user, ""), secret("Password", "adminPassword", "Use at least 15 characters. Save the password shown when installation finishes.")));
         if (!form.get("database").equals("derby")) page.getChildren().add(message("If the external database already contains engine tables, the engine keeps its existing administrator password.", "callout"));
     }
     private String serviceReason() {
         if (Services.supported().isEmpty()) return "This system has no supported service manager.";
-        try { return Services.blocked(Model.expand(form.get("installDir"))); } catch (Exception e) { return e.getMessage(); }
+        try { String blocked = Services.blocked(Model.expand(form.get("installDir"))); return blocked.isEmpty() ? serviceConflict : blocked; } catch (Exception e) { return e.getMessage(); }
     }
     private void service() {
-        heading("Keep the engine running", "A system service starts the engine when this computer starts and restarts it if it fails. You do not need to sign in.");
+        heading("Keep the engine running", "A system service starts the engine when this computer starts. You do not need to sign in.");
         Ui.Switch choice = new Ui.Switch("Run the engine as a service", service); choice.setDisable(Services.supported().isEmpty());
         Label explanation = message(service ? serviceReason().isEmpty() ? "Administrator approval is requested when you install." : serviceReason()
                 : "The installer starts the engine as a normal process. The engine stops when you restart the computer.", "muted");
-        String registration = Model.MAC ? "Starts at boot under your user account, using a system launch daemon." : Model.WINDOWS ? "Starts automatically under the Windows Local Service account." : "Starts at boot using a systemd system service.";
+        String registration = Model.MAC ? "Starts at boot as root, using the com.oie.oieservice launch daemon." : Model.WINDOWS ? "Starts automatically as the " + Services.WINDOWS_NAME + ", under the Local System account."
+                : Services.supported().equals("systemd") ? "Starts at boot as root, using the oieservice systemd service." : "Starts at boot as root, using the /etc/init.d/oieservice script.";
         HBox row = switchRow(choice, "Run the engine as a service", registration, "");
         choice.setOnAction(e -> { service = choice.isSelected(); explanation.setText(service ? serviceReason().isEmpty() ? "Administrator approval is requested when you install." : serviceReason() : "The installer starts the engine as a normal process. The engine stops when you restart the computer."); updateNext(); });
         page.getChildren().add(panel(row, explanation));
@@ -497,7 +499,7 @@ public final class Wizard extends Application {
         String completedMode = String.valueOf(result.get("mode"));
         String lead = completedMode.equals("upgrade") ? "Upgraded from " + result.get("from") + ". The installer kept your settings, database and extensions."
                 : completedMode.equals("reinstall") ? "The installer replaced the program files and kept your settings, database and extensions."
-                : "The engine accepted the admin sign-in. The installer removed the initial password from the settings file.";
+                : "The engine started and created its database. The installer removed the initial password from the settings file.";
         VBox heading = new VBox(6, message("Open Integration Engine " + result.get("version") + " is running", "heading"), message(lead, "intro"));
         heading.setMinWidth(0); HBox.setHgrow(heading, Priority.ALWAYS);
         HBox hero = new HBox(18, Ui.successMark(), heading); hero.setAlignment(Pos.CENTER_LEFT); hero.getStyleClass().add("done-hero");
@@ -550,10 +552,14 @@ public final class Wizard extends Application {
         if (serviceNode != null && !serviceNode.isNull()) details = panel(label("Service · " + serviceNode.path("kind").asText(), "section-title"),
                 commandRow("Start", serviceNode.path("start").asText()), commandRow("Stop", serviceNode.path("stop").asText()));
         else {
-            String launcher = Path.of(String.valueOf(result.get("home"))).resolve(Model.WINDOWS ? "oieservice.exe" : "oieservice").toString();
-            String command = Model.WINDOWS ? "& " + Privileges.powershell(launcher) : FilesSupport.quote(launcher);
-            details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ".", "muted"),
-                    commandRow("Start", command + " start"), commandRow("Stop", command + " stop"));
+            Path engine = Path.of(String.valueOf(result.get("home")));
+            if (Model.WINDOWS) details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ". Close its window to stop it.", "muted"),
+                    commandRow("Start", "& " + Privileges.powershell(engine.resolve("oieserver.exe").toString())));
+            else {
+                String command = FilesSupport.quote(engine.resolve("oieservice").toString());
+                details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ".", "muted"),
+                        commandRow("Start", command + " start"), commandRow("Stop", command + " stop"));
+            }
         }
         details.getChildren().add(commandRow("Remove", String.valueOf(result.get("uninstall")))); details.setSpacing(9); return details;
     }

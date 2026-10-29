@@ -37,44 +37,10 @@ final class NativeProcesses {
     static void stopOwned(Path home) throws Exception {
         List<ProcessHandle> processes = Model.engineProcesses(home);
         if (processes.isEmpty()) return;
-        if (!Model.WINDOWS) {
-            Set<Long> owned = new HashSet<>(); processes.forEach(p -> owned.add(p.pid()));
-            for (ProcessHandle process : processes) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) process.destroy();
-            return;
-        }
-        long pid = processes.getFirst().pid();
-        String script = """
-            $ErrorActionPreference='Stop'
-            Add-Type -TypeDefinition @'
-            using System;
-            using System.Runtime.InteropServices;
-            public static class OieConsole {
-              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool FreeConsole();
-              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool AttachConsole(uint processId);
-              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent,uint group);
-              [DllImport("kernel32.dll",SetLastError=true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler,bool add);
-            }
-            '@
-            [OieConsole]::FreeConsole() | Out-Null
-            if(-not [OieConsole]::AttachConsole(%d)){throw 'Cannot attach to the engine console. Stop the engine manually before upgrading.'}
-            try {
-              [OieConsole]::SetConsoleCtrlHandler([IntPtr]::Zero,$true) | Out-Null
-              if(-not [OieConsole]::GenerateConsoleCtrlEvent(0,0)){throw 'Could not request graceful engine shutdown.'}
-              Start-Sleep -Milliseconds 1000
-            } finally { [OieConsole]::FreeConsole() | Out-Null }
-            """.formatted(pid);
-        try { Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script)); }
-        catch (IOException e) { System.err.println(e.getMessage()); }
-        // Like the WinSW stop timeout: when the console request is not honored, end the launcher's process tree.
-        Instant deadline = Instant.now().plusSeconds(50);
-        while (Instant.now().isBefore(deadline) && !Model.engineProcesses(home).isEmpty()) Thread.sleep(500);
-        List<ProcessHandle> remaining = Model.engineProcesses(home);
-        Set<Long> owned = new HashSet<>(); remaining.forEach(p -> owned.add(p.pid()));
-        for (ProcessHandle process : remaining) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) {
-            System.err.println("The engine did not stop on request; ending process tree " + process.pid());
-            try { Model.command("taskkill.exe", "/PID", String.valueOf(process.pid()), "/T", "/F"); }
-            catch (IOException e) { if (process.isAlive()) throw e; }
-        }
+        // install4j cannot stop a console engine on Windows either; it asks the user to close it.
+        if (Model.WINDOWS) throw new IOException("Close the running engine (oieserver.exe). Without the service, Windows stops the engine only when its window closes.");
+        Set<Long> owned = new HashSet<>(); processes.forEach(p -> owned.add(p.pid()));
+        for (ProcessHandle process : processes) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) process.destroy();
     }
     static String backendClasspath(Path home) {
         Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
@@ -95,19 +61,25 @@ final class NativeProcesses {
                 & %s -cp %s org.openintegrationengine.installer.Main --uninstall %s --yes
                 exit $LASTEXITCODE
                 """.formatted(Privileges.powershell(java.toString()), Privileges.powershell(classpath), Privileges.powershell(home.toString()));
-            Files.writeString(FilesSupport.safeTarget(home, "oie-uninstall.ps1"), script);
-            String key = registryKey(home);
-            String register = "$ErrorActionPreference='Stop'; $k=" + Privileges.powershell(key) + "; New-Item -Path $k -Force | Out-Null; "
-                    + "New-ItemProperty $k DisplayName -Value 'Open Integration Engine' -PropertyType String -Force | Out-Null; "
-                    + "New-ItemProperty $k DisplayVersion -Value " + Privileges.powershell(version) + " -PropertyType String -Force | Out-Null; "
-                    + "New-ItemProperty $k Publisher -Value 'Open Integration Engine contributors' -PropertyType String -Force | Out-Null; "
+            Files.writeString(FilesSupport.safeTarget(home, "uninstall.ps1"), script);
+            // install4j's Apps & Features entry, under its application ID.
+            long size = FilesSupport.size(home) / 1024;
+            String[] parts = version.split("\\.");
+            String register = "$ErrorActionPreference='Stop'; $k=" + Privileges.powershell(REGISTRY_KEY) + "; New-Item -Path $k -Force | Out-Null; "
+                    + "New-ItemProperty $k DisplayName -Value " + Privileges.powershell("Open Integration Engine " + version) + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k DisplayIcon -Value " + Privileges.powershell(home.resolve("oieserver.exe") + ",0") + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k UninstallString -Value " + Privileges.powershell("\"" + home.resolve("uninstall.exe") + "\"") + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k Publisher -Value 'Open Integration Engine Project' -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k URLInfoAbout -Value 'https://openintegrationengine.com' -PropertyType String -Force | Out-Null; "
                     + "New-ItemProperty $k InstallLocation -Value " + Privileges.powershell(home.toString()) + " -PropertyType String -Force | Out-Null; "
-                    + "New-ItemProperty $k UninstallString -Value " + Privileges.powershell("\"" + home.resolve("oie-uninstall.exe") + "\"") + " -PropertyType String -Force | Out-Null; "
-                    + "New-ItemProperty $k NoModify -Value 1 -PropertyType DWord -Force | Out-Null; New-ItemProperty $k NoRepair -Value 1 -PropertyType DWord -Force | Out-Null";
+                    + "New-ItemProperty $k EstimatedSize -Value " + size + " -PropertyType DWord -Force | Out-Null; "
+                    + "New-ItemProperty $k DisplayVersion -Value " + Privileges.powershell(version) + " -PropertyType String -Force | Out-Null; "
+                    + "New-ItemProperty $k VersionMajor -Value " + parts[0] + " -PropertyType DWord -Force | Out-Null; "
+                    + "New-ItemProperty $k VersionMinor -Value " + parts[1] + " -PropertyType DWord -Force | Out-Null";
             Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(register));
-            // The install4j program group: the command line under the product name, and the uninstaller.
+            // install4j's program group: the service launcher and the command line under the product name.
             String menu = "$ErrorActionPreference='Stop'; $engine=" + Privileges.powershell(home.toString()) + "; $menu=" + START_MENU + "; New-Item -ItemType Directory -Path $menu -Force | Out-Null; $shell=New-Object -ComObject WScript.Shell; "
-                    + "foreach($entry in @(@('Open Integration Engine','oiecommand.exe'),@('Uninstall Open Integration Engine','oie-uninstall.exe'))){ $link=$shell.CreateShortcut((Join-Path $menu ($entry[0]+'.lnk'))); $link.TargetPath=(Join-Path $engine $entry[1]); $link.WorkingDirectory=$engine; $link.IconLocation=(Join-Path $engine 'oieserver.exe'); $link.Save() }";
+                    + "foreach($entry in @(@('Open Integration Engine Service','oieservice.exe'),@('Open Integration Engine','oiecommand.exe'))){ $target=(Join-Path $engine $entry[1]); $link=$shell.CreateShortcut((Join-Path $menu ($entry[0]+'.lnk'))); $link.TargetPath=$target; $link.WorkingDirectory=$engine; $link.IconLocation=($target+',0'); $link.Save() }";
             Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(menu));
         } else {
             String invoke = FilesSupport.quote(java.toString()) + " -cp " + FilesSupport.quote(classpath) + " " + Main.class.getName() + " --uninstall " + FilesSupport.quote(home.toString()) + " --yes";
@@ -122,18 +94,42 @@ final class NativeProcesses {
                 if [ "$(id -u)" != 0 ]; then exec sudo %s; fi
                 exec %s
                 """.formatted(FilesSupport.quote(home.toString()), invoke, invoke);
-            Path uninstaller = FilesSupport.safeTarget(home, "oie-uninstall"); Files.writeString(uninstaller, script); FilesSupport.executable(uninstaller);
+            Path uninstaller = FilesSupport.safeTarget(home, "uninstall"); Files.writeString(uninstaller, script); FilesSupport.executable(uninstaller);
+            // install4j links the service and command-line launchers into /usr/local/bin on Linux.
+            if (!Model.MAC && Privileges.administrator() && Files.isDirectory(LINKS)) for (String name : LINKED) {
+                Path link = LINKS.resolve(name);
+                if (Files.exists(link, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(link)) continue;
+                Files.deleteIfExists(link); Files.createSymbolicLink(link, home.resolve(name));
+            }
         }
     }
-    private static String registryKey(Path home) throws Exception {
-        return "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OIE-" + Services.label(home);
+    private static final Path LINKS = Path.of("/usr/local/bin");
+    private static final List<String> LINKED = List.of("oieservice", "oiecommand");
+    /** install4j's application ID, which keys its Apps & Features entry. */
+    private static final String REGISTRY_KEY = "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\4145-9206-7630-8076";
+    /** Remove the registrations made by tools(): Apps & Features and the program group, or the Linux links. */
+    static void removeTools(Path home) throws Exception {
+        if (Model.WINDOWS) {
+            String remove = "$engine=" + Privileges.powershell(home.toString()) + "; $k=" + Privileges.powershell(REGISTRY_KEY) + "; "
+                    + "if((Test-Path -LiteralPath $k) -and ([string](Get-ItemProperty -LiteralPath $k).InstallLocation).TrimEnd('\\') -ieq $engine.TrimEnd('\\')){ Remove-Item -LiteralPath $k -Recurse -Force }; "
+                    + "$menu=" + START_MENU + "; $shell=New-Object -ComObject WScript.Shell; "
+                    + "foreach($file in @(Get-ChildItem -LiteralPath $menu -Filter *.lnk -ErrorAction SilentlyContinue)){ if($shell.CreateShortcut($file.FullName).TargetPath.StartsWith($engine+'\\',[StringComparison]::OrdinalIgnoreCase)){ Remove-Item -LiteralPath $file.FullName -Force } }; "
+                    + "if((Test-Path -LiteralPath $menu) -and -not (Get-ChildItem -LiteralPath $menu)){ Remove-Item -LiteralPath $menu -Force }";
+            Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(remove));
+            Files.deleteIfExists(home.resolve("uninstall.ps1"));
+        } else {
+            for (String name : LINKED) {
+                Path link = LINKS.resolve(name);
+                if (Files.isSymbolicLink(link) && Files.readSymbolicLink(link).startsWith(home)) Files.delete(link);
+            }
+            Files.deleteIfExists(home.resolve("uninstall"));
+        }
     }
     static void retireLegacyRegistration(Path home, Path backup) throws Exception {
         if (!Model.WINDOWS || !Files.isDirectory(home.resolve(".install4j"))) return;
         String script = """
             $ErrorActionPreference='Stop'
             $homeDir=%s
-            $ownKey=%s
             $found=@()
             foreach($base in @('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')){
               foreach($key in Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue){
@@ -141,11 +137,9 @@ final class NativeProcesses {
                 $cmd=[string]$p.UninstallString
                 $exe=if($cmd.StartsWith('"')){($cmd -split '"')[1]}else{($cmd -split '\\s+')[0]}
                 if(($p.InstallLocation -and ([string]$p.InstallLocation).TrimEnd('\\') -ieq $homeDir.TrimEnd('\\')) -or $exe -ieq ($homeDir+'\\uninstall.exe')){
-                  if($key.Name -ne $ownKey.Replace('HKLM:','HKEY_LOCAL_MACHINE')){
-                    # Plain registry values only: the provider object graph makes ConvertTo-Json run for minutes.
-                    $values=[ordered]@{}; foreach($name in $key.GetValueNames()){ $values[$name]=[string]$key.GetValue($name) }
-                    $found+=[pscustomobject]@{path=$key.Name;values=$values}
-                  }
+                  # Plain registry values only: the provider object graph makes ConvertTo-Json run for minutes.
+                  $values=[ordered]@{}; foreach($name in $key.GetValueNames()){ $values[$name]=[string]$key.GetValue($name) }
+                  $found+=[pscustomobject]@{path=$key.Name;values=$values}
                 }
               }
             }
@@ -153,15 +147,10 @@ final class NativeProcesses {
               ConvertTo-Json -InputObject @($found) -Depth 4 | Set-Content -LiteralPath %s -Encoding UTF8
               foreach($item in $found){Remove-Item -LiteralPath ('Registry::'+$item.path) -Recurse -Force}
             }
-            """.formatted(Privileges.powershell(home.toString()), Privileges.powershell(registryKey(home)), Privileges.powershell(backup.resolve("previous-uninstall-registration.json").toString()));
+            """.formatted(Privileges.powershell(home.toString()), Privileges.powershell(backup.resolve("previous-uninstall-registration.json").toString()));
         Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
     }
     static void windowsRemove(Path home) throws Exception {
-        String remove = "Remove-Item -LiteralPath " + Privileges.powershell(registryKey(home)) + " -Recurse -Force -ErrorAction SilentlyContinue; "
-                + "$engine=" + Privileges.powershell(home.toString()) + "; $menu=" + START_MENU + "; $shell=New-Object -ComObject WScript.Shell; "
-                + "foreach($file in @(Get-ChildItem -LiteralPath $menu -Filter *.lnk -ErrorAction SilentlyContinue)){ if($shell.CreateShortcut($file.FullName).TargetPath.StartsWith($engine+'\\',[StringComparison]::OrdinalIgnoreCase)){ Remove-Item -LiteralPath $file.FullName -Force } }; "
-                + "if((Test-Path -LiteralPath $menu) -and -not (Get-ChildItem -LiteralPath $menu)){ Remove-Item -LiteralPath $menu -Force }";
-        Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(remove));
         Path script = Files.createTempFile("oie-uninstall-", ".ps1"); Json.privateFile(script);
         String cleanup = """
             $ErrorActionPreference='Stop'

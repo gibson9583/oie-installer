@@ -13,8 +13,8 @@ public final class EngineBootstrap {
         Path home = Path.of(System.getProperty("oie.engine.home")).toRealPath();
         String role = System.getProperty("oie.engine.role", "server");
         if (role.equals("uninstall")) {
-            List<String> uninstall = WINDOWS ? new ArrayList<>(List.of("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", home.resolve("oie-uninstall.ps1").toString()))
-                    : new ArrayList<>(List.of("/bin/bash", home.resolve("oie-uninstall").toString()));
+            List<String> uninstall = WINDOWS ? new ArrayList<>(List.of("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", home.resolve("uninstall.ps1").toString()))
+                    : new ArrayList<>(List.of("/bin/bash", home.resolve("uninstall").toString()));
             for (String argument : args) uninstall.add(WINDOWS && argument.equals("--yes") ? "-Yes" : argument);
             System.exit(new ProcessBuilder(uninstall).inheritIO().start().waitFor()); return;
         }
@@ -23,8 +23,8 @@ public final class EngineBootstrap {
             String verb = args[0].replaceFirst("^[-/]+", "").toLowerCase(Locale.ROOT);
             switch (verb) {
                 case "run", "run-redirect", "start-launchd" -> args = Arrays.copyOfRange(args, 1, args.length);
-                case "start", "stop", "restart", "force-reload", "status" -> { System.exit(ServiceControl.run(home, verb)); return; }
-                default -> { System.err.println("Usage: oieservice {start|stop|run|run-redirect|status|restart|force-reload}"); System.exit(1); return; }
+                case "start", "stop", "restart", "force-reload", "status", "install", "uninstall" -> { System.exit(ServiceControl.run(home, verb)); return; }
+                default -> { System.err.println("Usage: oieservice {start|stop|run|run-redirect|status|restart|force-reload" + (WINDOWS ? "|/install|/uninstall" : "") + "}"); System.exit(1); return; }
             }
         }
         boolean cli = role.equals("command");

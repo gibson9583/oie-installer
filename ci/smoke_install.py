@@ -40,12 +40,12 @@ START_MENU = Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Microsoft/
 def installer() -> tuple[Path, Path]:
     image = ROOT / "target/image"
     if MAC:
-        contents = image / "OIE Installer JavaFX.app/Contents"
+        contents = image / "Open Integration Engine Installer.app/Contents"
         return contents / "runtime/Contents/Home/bin/java", contents / "app"
     if WINDOWS:
-        folder = image / "OIE Installer JavaFX"
+        folder = image / "Open Integration Engine Installer"
         return folder / "runtime/bin/java.exe", folder / "app"
-    folder = image / "OIE Installer JavaFX/lib"
+    folder = image / "Open Integration Engine Installer/lib"
     return folder / "runtime/bin/java", folder / "app"
 
 
@@ -122,6 +122,58 @@ def web_client(port: int) -> bool:
         return False
 
 
+LINUX = sys.platform.startswith("linux")
+WINDOWS_SERVICE = "Open Integration Engine Service"
+
+
+def service_definition() -> Path:
+    """install4j's service file: the launch daemon or the systemd unit."""
+    return Path("/Library/LaunchDaemons/com.oie.oieservice.plist") if MAC else Path("/etc/systemd/system/oieservice.service")
+
+
+def windows_service_binary() -> str:
+    result = subprocess.run(["sc.exe", "qc", WINDOWS_SERVICE], capture_output=True, text=True)
+    match = re.search(r"BINARY_PATH_NAME\s*:\s*(.+)", result.stdout)
+    return match.group(1).strip().strip('"') if match else ""
+
+
+def install4j_output(home: Path, service: bool) -> None:
+    """The launchers, links, program group and service that install4j creates."""
+    for name in ("oieserver", "oieservice", "oiecommand", "uninstall"):
+        if not launcher(home, name).is_file():
+            raise SystemExit(f"Missing launcher {name}")
+    for name in ("oieserver.vmoptions", "oieservice.vmoptions", "conf/mirth.properties", "mirth-server-launcher.jar"):
+        if not (home / name).is_file():
+            raise SystemExit(f"Missing {name}")
+    if (home / ".install4j").exists():
+        raise SystemExit("install4j runtime files were installed")
+    if WINDOWS:
+        for entry in ("Open Integration Engine Service.lnk", "Open Integration Engine.lnk"):
+            if not (START_MENU / entry).is_file():
+                raise SystemExit(f"Missing Start Menu entry {entry}")
+        if b"requireAdministrator" not in (home / "oiecommand.exe").read_bytes():
+            raise SystemExit("oiecommand.exe does not require administrator elevation")
+        if service and not windows_service_binary().lower().startswith(str(home).lower()):
+            raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home}")
+    if LINUX:
+        for name in ("oieservice", "oiecommand"):
+            link = Path("/usr/local/bin", name)
+            if not link.is_symlink() or Path(os.readlink(link)) != home / name:
+                raise SystemExit(f"{link} does not link to {home / name}")
+    if service and not WINDOWS:
+        definition = service_definition()
+        text = definition.read_text() if definition.is_file() else ""
+        if f"{home}/oieservice" not in text or "start-launchd" not in text:
+            raise SystemExit(f"{definition} is not install4j's definition for {home}")
+        print(text, flush=True)
+
+
+def close_console_engine(home: Path) -> None:
+    """Close a Windows console engine, as a user closes its window."""
+    run(["powershell.exe", "-NoProfile", "-Command",
+         f"Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '{home}\\*' }} | ForEach-Object {{ taskkill.exe /PID $_.ProcessId /T /F }}"], expect=None)
+
+
 def launcher(home: Path, name: str) -> Path:
     return home / (name + EXE)
 
@@ -141,25 +193,19 @@ def smoke(service: bool, http: int, https: int) -> None:
             print(f"== {'Service' if service else 'Process'} install into {home}", flush=True)
             run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
 
-            # The install4j launcher set, without install4j's runtime.
-            for name in ("oieserver", "oieservice", "oiecommand", "oie-uninstall"):
-                if not launcher(home, name).is_file():
-                    raise SystemExit(f"Missing launcher {name}")
-            for name in ("oieserver.vmoptions", "oieservice.vmoptions", "conf/mirth.properties", "mirth-server-launcher.jar"):
-                if not (home / name).is_file():
-                    raise SystemExit(f"Missing {name}")
-            if (home / ".install4j").exists():
-                raise SystemExit("install4j runtime files were installed")
-            if WINDOWS:
-                for entry in ("Open Integration Engine.lnk", "Uninstall Open Integration Engine.lnk"):
-                    if not (START_MENU / entry).is_file():
-                        raise SystemExit(f"Missing Start Menu entry {entry}")
+            install4j_output(home, service)
+            if "server.initialadminpassword" in (home / "conf/mirth.properties").read_text(encoding="latin-1"):
+                raise SystemExit("The initial administrator password remains in conf/mirth.properties")
 
             service_launcher = launcher(home, "oieservice")
             run([service_launcher, "status"], expect=0)
-            run([service_launcher, "stop"], expect=0)
-            run([service_launcher, "status"], expect=3)
-            run([service_launcher, "start"], expect=0)
+            if WINDOWS and not service:
+                # install4j's oieservice.exe controls only the service; a console engine stops when its window closes.
+                run([service_launcher, "stop"], expect=1)
+            else:
+                run([service_launcher, "stop"], expect=0)
+                run([service_launcher, "status"], expect=3)
+                run([service_launcher, "start"], expect=0)
             wait(lambda: run([service_launcher, "status"], expect=None) == 0, "oieservice status")
             wait(lambda: port_open(https), f"HTTPS port {https}")
             wait(lambda: web_client(https), "the OIE Web Client", seconds=180)
@@ -168,8 +214,9 @@ def smoke(service: bool, http: int, https: int) -> None:
             script.write_text("status\n")
             command = [launcher(home, "oiecommand"), "-a", f"https://localhost:{https}", "-u", "admin", "-p", password, "-s", script]
             wait(lambda: run(command, expect=None, timeout=180) == 0, "oiecommand", seconds=240)
-            run([service_launcher, "restart"], expect=0)
-            wait(lambda: run([service_launcher, "status"], expect=None) == 0, "restart")
+            if not (WINDOWS and not service):
+                run([service_launcher, "restart"], expect=0)
+                wait(lambda: run([service_launcher, "status"], expect=None) == 0, "restart")
             if service:
                 print("== Reinstall over the installed engine", flush=True)
                 run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
@@ -180,9 +227,11 @@ def smoke(service: bool, http: int, https: int) -> None:
                 diagnostics(home)
             raise
         finally:
-            if launcher(home, "oie-uninstall").is_file():
+            if WINDOWS and not service:
+                close_console_engine(home)
+            if launcher(home, "uninstall").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "oie-uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes"], expect=None)
                 # Windows removes the folder after the uninstaller exits.
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
@@ -192,6 +241,10 @@ def smoke(service: bool, http: int, https: int) -> None:
                     print(error, flush=True)
     if WINDOWS and any(START_MENU.glob("*.lnk")):
         raise SystemExit("Start Menu entries remain after uninstall")
+    if LINUX and any(Path("/usr/local/bin", name).is_symlink() for name in ("oieservice", "oiecommand")):
+        raise SystemExit("/usr/local/bin links remain after uninstall")
+    if not WINDOWS and service_definition().exists():
+        raise SystemExit(f"{service_definition()} remains after uninstall")
     print(f"== {'Service' if service else 'Process'} pass complete", flush=True)
 
 
@@ -268,7 +321,22 @@ def upgrade(http: int, https: int) -> None:
 
             plan = work / "plan.json"
             plan.write_text(json.dumps({"installDir": str(home), "javaCmd": "@bundled", "service": True}))
-            print(f"== Upgrade {PREVIOUS} to the packaged release", flush=True)
+            # A file where an add-on folder belongs makes the upgrade fail after the program files are replaced.
+            print(f"== Upgrade {PREVIOUS} that fails and rolls back", flush=True)
+            blocker = home / "extensions/rbac"
+            blocker.write_text("not an add-on folder")
+            run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan], expect=1)
+            receipt = json.loads((home / "oie-installer.json").read_text())
+            if not receipt.get("rolledBack"):
+                raise SystemExit("The failed upgrade did not roll back")
+            if (home / "server-lib").exists() or launcher(home, "oieserver").exists():
+                raise SystemExit("The rollback left new program files")
+            if "smoke.marker = kept" not in properties.read_text(encoding="latin-1") or not (home / "appdata/mirthdb").is_dir():
+                raise SystemExit("The rollback did not keep the settings and database")
+            if not WINDOWS and service_definition().exists():
+                raise SystemExit("The rollback left the new service registered")
+            blocker.unlink()
+            print(f"== Upgrade {PREVIOUS} to the packaged release after the rollback", flush=True)
             run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
             if (home / ".install4j").exists() or not list(home.glob("backups/*/program/.install4j")):
                 raise SystemExit("The install4j runtime was not moved into the backup")
@@ -291,9 +359,9 @@ def upgrade(http: int, https: int) -> None:
                 diagnostics(home)
             raise
         finally:
-            if launcher(home, "oie-uninstall").is_file() and (home / "oie-installer.json").is_file():
+            if launcher(home, "uninstall").is_file() and (home / "oie-installer.json").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "oie-uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes"], expect=None)
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
                 except SystemExit as error:
@@ -317,8 +385,6 @@ def legacy_service(home: Path) -> str:
         plist = Path("/Library/LaunchDaemons/com.oie.oieservice.plist")
         return "com.oie.oieservice" if plist.is_file() and str(home) in plist.read_text(errors="replace") else ""
     for unit in sorted(Path("/etc/systemd/system").glob("*.service")):
-        if unit.name.startswith("org.openintegrationengine.engine."):
-            continue  # The new installer's own unit also runs <home>/oieservice.
         if unit.is_file() and not unit.is_symlink() and f"{home}/oieservice" in unit.read_text(errors="replace"):
             return unit.name
     return ""
@@ -393,8 +459,10 @@ def legacy_installer(http: int, https: int) -> None:
             plan.write_text(json.dumps({"installDir": str(home), "javaCmd": "@bundled", "service": True}))
             print(f"== Upgrade the running install4j {PREVIOUS} service", flush=True)
             run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
-            if legacy_service(home):
-                raise SystemExit("The install4j service is still registered")
+            # install4j and this installer use the same service names; on Windows the service now runs the WinSW wrapper.
+            if WINDOWS and not windows_service_binary().lower().endswith("oie-service.exe"):
+                raise SystemExit("The install4j service was not replaced")
+            install4j_output(home, True)
             if (home / ".install4j").exists():
                 raise SystemExit("The install4j runtime was not moved into the backup")
             if "smoke.marker = kept" not in properties.read_text(encoding="latin-1"):
@@ -420,9 +488,9 @@ def legacy_installer(http: int, https: int) -> None:
                 run(["sh", "-c", "ls -la /etc/systemd/system /etc/init.d | grep -i oie; grep -rl oie /etc/systemd/system 2>/dev/null"], expect=None)
             raise
         finally:
-            if launcher(home, "oie-uninstall").is_file() and (home / "oie-installer.json").is_file():
+            if launcher(home, "uninstall").is_file() and (home / "oie-installer.json").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "oie-uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes"], expect=None)
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
                 except SystemExit as error:
@@ -432,6 +500,47 @@ def legacy_installer(http: int, https: int) -> None:
     print("== Install4j installer upgrade pass complete", flush=True)
 
 
+def quiet_no_jre() -> None:
+    """The no-JRE media in install4j's unattended mode: -q -dir <folder>; the engine runs on an installed Java."""
+    image = ROOT / "target/image-no-jre"
+    if not image.exists():
+        print("== No no-JRE image; skipped", flush=True)
+        return
+    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/Applications") if MAC else Path("/opt")
+    home = base / f"oie-smoke-nojre-{secrets.token_hex(3)}"
+    if MAC:
+        java, app = image / "Open Integration Engine Installer.app/Contents/runtime/Contents/Home/bin/java", image / "Open Integration Engine Installer.app/Contents/app"
+    elif WINDOWS:
+        java, app = image / "Open Integration Engine Installer/runtime/bin/java.exe", image / "Open Integration Engine Installer/app"
+    else:
+        java, app = image / "Open Integration Engine Installer/lib/runtime/bin/java", image / "Open Integration Engine Installer/lib/app"
+    classpath = os.pathsep.join([str(app / "oie-installer-jpackage.jar"), str(app / "lib" / "*")])
+    failed = False
+    try:
+        print(f"== No-JRE install with -q -dir {home}", flush=True)
+        run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "-q", "-dir", home])
+        install4j_output(home, True)
+        receipt = json.loads((home / "oie-installer.json").read_text())
+        if str(home) in receipt.get("javaCmd", ""):
+            raise SystemExit("The no-JRE engine runs on a bundled Java: " + receipt["javaCmd"])
+        run([launcher(home, "oieservice"), "status"], expect=0)
+    except BaseException:
+        failed = True
+        if home.exists():
+            diagnostics(home)
+        raise
+    finally:
+        if launcher(home, "uninstall").is_file():
+            run([launcher(home, "uninstall"), "--yes"], expect=None)
+            try:
+                wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+            except SystemExit as error:
+                if not failed:
+                    raise
+                print(error, flush=True)
+    print("== No-JRE pass complete", flush=True)
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     os.environ["OIE_INSTALLER_DEBUG"] = "1"
@@ -439,6 +548,7 @@ def main() -> int:
     smoke(False, 28080, 28443)
     upgrade(38080, 38443)
     legacy_installer(48080, 48443)
+    quiet_no_jre()
     return 0
 
 

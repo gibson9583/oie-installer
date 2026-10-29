@@ -132,15 +132,18 @@ final class Model {
                     json.path("databasePassword").asText(), json.path("adminPassword").asText(), json.path("service").asBoolean(false),
                     Collections.unmodifiableMap(choices), json.path("expectedMode").asText(), json.path("expectedVersion").asText());
         }
+        Plan withJava(String java) { return new Plan(home, java, httpPort, httpsPort, database, databaseUrl, databaseUsername, databasePassword, adminPassword, service, plugins, expectedMode, expectedVersion); }
         private static int number(JsonNode json, String key) {
             String text = json.path(key).asText();
             try { return Integer.parseInt(text); } catch (NumberFormatException e) { return 0; }
         }
     }
-    record Existing(String version, int httpPort, int httpsPort, String database, String javaCmd, ObjectNode receipt, List<ProcessHandle> processes, long dataBytes, boolean serviceRunning) {
-        boolean managed() { return receipt != null; }
+    record Existing(String version, int httpPort, int httpsPort, String database, String javaCmd, ObjectNode receipt, ObjectNode service, List<ProcessHandle> processes, long dataBytes, boolean serviceRunning) {
+        /** Installed by this installer, or by install4j with its engine service. */
+        boolean managed() { return receipt != null || service != null; }
         boolean running() { return serviceRunning || !processes.isEmpty(); }
-        JsonNode service() { return receipt == null ? null : receipt.get("service"); }
+        /** A failed operation was rolled back: user data remains, program files do not. */
+        boolean rolledBack() { return receipt != null && receipt.path("rolledBack").asBoolean(false); }
     }
     record Destination(Path home, String mode, Existing existing, long free, long needed) {}
     static List<ProcessHandle> engineProcesses(Path home) {
@@ -162,13 +165,11 @@ final class Model {
         }
     }
     static Existing detect(Path home) throws Exception {
-        if (!Files.isRegularFile(home.resolve("conf/mirth.properties")) || !Files.isDirectory(home.resolve("server-lib"))) return null;
+        if (!Files.isRegularFile(home.resolve("conf/mirth.properties"))) return null;
         ObjectNode receipt = null;
         try { JsonNode n = Json.read(home.resolve(RECEIPT)); if (n.isObject() && n.has("archiveSha256") && n.has("launcherCommit")) receipt = (ObjectNode)n; } catch (IOException ignored) {}
-        if (receipt == null) {
-            ObjectNode legacy = Services.legacy(home);
-            if (legacy != null) { receipt = Json.object(); receipt.set("service", legacy); receipt.put("legacyInstall4j", true); }
-        }
+        if (!Files.isDirectory(home.resolve("server-lib")) && (receipt == null || !receipt.path("rolledBack").asBoolean(false))) return null;
+        ObjectNode service = Services.detect(home);
         var props = FilesSupport.properties(home.resolve("conf/mirth.properties")); String version = "unknown";
         try (JarFile jar = new JarFile(home.resolve("server-lib/mirth-client-core.jar").toFile())) {
             Properties p = new Properties(); try (InputStream input = jar.getInputStream(jar.getJarEntry("version.properties"))) { p.load(input); }
@@ -179,8 +180,8 @@ final class Model {
         if (Files.exists(home.resolve("conf/custom.vmoptions"))) for (String line : Files.readAllLines(home.resolve("conf/custom.vmoptions")))
             if (line.strip().startsWith("-java-cmd ")) javaCmd = line.strip().substring(10).trim();
         return new Existing(version, Integer.parseInt(props.getProperty("http.port", "8080")), Integer.parseInt(props.getProperty("https.port", "8443")),
-                props.getProperty("database", "derby"), javaCmd, receipt, engineProcesses(home),
-                FilesSupport.size(home.resolve("appdata")) + FilesSupport.size(home.resolve("conf")), receipt != null && Services.running(home, receipt.get("service")));
+                props.getProperty("database", "derby"), javaCmd, receipt, service, engineProcesses(home),
+                FilesSupport.size(home.resolve("appdata")) + FilesSupport.size(home.resolve("conf")), service != null && Services.running(home));
     }
     static int compare(String a, String b) {
         if (!a.matches("\\d+(?:\\.\\d+)*(?:[-+].*)?") || !b.matches("\\d+(?:\\.\\d+)*(?:[-+].*)?")) throw new IllegalArgumentException("Cannot determine engine version safely.");

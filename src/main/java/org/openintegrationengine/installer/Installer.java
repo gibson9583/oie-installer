@@ -49,6 +49,7 @@ final class Installer {
         if (plan.service()) {
             if (Services.supported().isEmpty()) throw new IllegalArgumentException("This system has no supported service manager.");
             String reason = Services.blocked(destination.home()); if (!reason.isEmpty()) throw new IllegalArgumentException(reason);
+            reason = Services.conflict(destination.home()); if (!reason.isEmpty()) throw new IllegalArgumentException(reason);
         }
         if (destination.mode().equals("new")) {
             if (!Model.DATABASES.contains(plan.database())) throw new IllegalArgumentException("Select a supported database.");
@@ -63,6 +64,11 @@ final class Installer {
     Map<String, Object> run(Model.Plan plan) throws Exception {
         if (!payload.nativeEngine()) throw new IOException("Rebuild this installer with the native engine payload.");
         Path home = Model.canonical(plan.home());
+        if (plan.javaCmd().equals(Model.BUNDLED) && !payload.bundledJava()) {
+            var java = Model.runtimes().stream().filter(Model.JavaRuntime::supported).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("This installer has no bundled Java. Install Java 17 or later, or use the -with-JRE installer."));
+            plan = plan.withJava(java.path().toString());
+        }
         try (EngineLock held = EngineLock.acquire(home)) {
             Model.Destination destination = Model.destination(home.toString(), payload);
             validate(plan, destination);
@@ -98,7 +104,7 @@ final class Installer {
         @Override public void close() throws IOException { try { lock.release(); } finally { channel.close(); } }
     }
     private Map<String, Object> install(Model.Plan plan, Model.Destination destination) throws Exception {
-        Path home = destination.home(); var existing = destination.existing(); boolean upgrade = existing != null;
+        Path home = destination.home(); var existing = destination.existing(); boolean upgrade = existing != null, homeExisted = Files.exists(home);
         begin("verify"); payload.verify(log); Archives.Layout layout = Archives.inspect(payload); Archives.verifyPlugins(payload);
         done("verify", payload.manifest.path("files").size() + " files match their pinned hashes");
         Path backup = null;
@@ -117,91 +123,104 @@ final class Installer {
                 if (Files.isRegularFile(serviceFile, LinkOption.NOFOLLOW_LINKS)) Files.copy(serviceFile, backup.resolve("previous-service" + (Model.WINDOWS ? ".xml" : Model.MAC ? ".plist" : ".service")));
             }
             NativeProcesses.retireLegacyRegistration(home, backup);
-            Services.stop(home, existing.service(), true);
+            // Like install4j's UninstallPreviousAction: the previous service and program files go before the new ones are installed.
+            Services.stop(home, true);
             ObjectNode stopped = existing.receipt() == null ? Json.object() : existing.receipt().deepCopy();
-            if (!stopped.has("archiveSha256")) stopped.put("archiveSha256", "");
-            if (!stopped.has("launcherCommit")) stopped.put("launcherCommit", "install4j");
-            stopped.put("version", existing.version()).put("pendingPayloadSha256", payload.sourceHash())
-                    .put("home", home.toString()).put("migrationPending", true).putNull("service");
-            Json.write(home.resolve(Model.RECEIPT), stopped);
+            stopped.put("archiveSha256", stopped.path("archiveSha256").asText("")).put("launcherCommit", stopped.path("launcherCommit").asText("install4j"))
+                    .put("version", existing.version()).put("pendingPayloadSha256", payload.sourceHash()).put("home", home.toString()).put("migrationPending", true).putNull("service");
+            Json.write(home.resolve(Model.RECEIPT), stopped, false);
             done("backup", backup.toString());
             begin("replace"); Archives.retire(home, layout, backup.resolve("program"));
         } else { begin("unpack"); Files.createDirectories(home); }
-        String unpack = upgrade ? "replace" : "unpack";
-        List<String> changed = Archives.extract(payload, home, backup == null ? null : backup.resolve("defaults-" + payload.version()), layout.count(),
-                (detail, fraction) -> event(unpack, "active", detail, fraction));
-        done(unpack, upgrade ? "Program files replaced; configuration and data kept" : "Engine unpacked");
-        begin("launcher");
-        for (String name : List.of("oieserver", "oieservice", "oiecommand"))
-            if (!Files.isRegularFile(payload.launcher(home, name))) throw new IOException("Missing native launcher: " + name);
-        done("launcher", "jpackage · server, service and command line");
-        begin("java");
-        Path options = FilesSupport.safeTarget(home, "conf/custom.vmoptions");
-        List<String> lines = new ArrayList<>(Files.readAllLines(options).stream().filter(s -> !s.strip().startsWith("-java-cmd")).toList());
-        Path selectedJava = plan.javaCmd().equals(Model.BUNDLED) ? payload.engineJava(home) : Model.expand(plan.javaCmd()).toRealPath();
-        String entry = "-java-cmd " + selectedJava;
-        int marker = lines.indexOf("# Add custom options above this comment."); lines.add(marker < 0 ? lines.size() : marker, entry);
-        Files.writeString(options, String.join("\n", lines) + "\n"); done("java", plan.javaCmd());
-        Files.createDirectories(home.resolve("logs")); Files.createDirectories(home.resolve("appdata")); Services.permissions(home, plan.service());
-        begin("configure"); Path properties = FilesSupport.safeTarget(home, "conf/mirth.properties");
-        Map<String, String> settings = new LinkedHashMap<>(); settings.put("version", payload.version());
-        if (!upgrade) {
-            settings.put("http.port", String.valueOf(plan.httpPort())); settings.put("https.port", String.valueOf(plan.httpsPort()));
-            String keystore = Model.password(); settings.put("keystore.storepass", keystore); settings.put("keystore.keypass", keystore);
-            settings.put("server.initialadminpassword", plan.adminPassword());
-            if (!plan.database().equals("derby")) {
-                settings.put("database", plan.database()); settings.put("database.url", plan.databaseUrl());
-                settings.put("database.username", plan.databaseUsername()); settings.put("database.password", plan.databasePassword());
-            }
-        }
-        FilesSupport.properties(properties, settings, Set.of()); done("configure", upgrade ? "Existing database, ports and credentials kept" : "Database, ports and initial credentials written");
+        Path properties = FilesSupport.safeTarget(home, "conf/mirth.properties");
+        boolean passwordPending = false;
         ObjectNode receipt = upgrade && existing.receipt() != null ? existing.receipt().deepCopy() : Json.object();
-        String now = Instant.now().toString(); receipt.put("version", payload.version()).put("archive", payload.manifest.path("archive").asText())
-                .put("archiveSha256", payload.sourceHash())
-                .put("launcherCommit", payload.manifest.path("launcher").path("commit").asText()).put("updatedAt", now)
-                .put("installer", "jpackage").put("home", home.toString()).put("nativeEngine", true).put("javaCmd", selectedJava.toString())
-                .put("invokingUser", Privileges.invokingUser()).put("invokingHome", Privileges.invokingHome().toString()).put("invokingUid", Privileges.invokingUid());
-        if (!receipt.has("installedAt")) receipt.put("installedAt", now);
-        receipt.remove(List.of("service", "migrationPending", "pendingPayloadSha256", "legacyInstall4j"));
-        int https = upgrade ? existing.httpsPort() : plan.httpsPort(); receipt.put("httpsPort", https); receipt.putNull("pid");
-        if (upgrade) {
-            var history = receipt.has("history") && receipt.path("history").isArray() ? receipt.withArray("history") : receipt.putArray("history");
-            history.addObject().put("from", existing.version()).put("to", payload.version()).put("at", now).put("backup", home.relativize(backup).toString());
+        List<String> changed; Path selectedJava; BooleanSupplier alive; long offset;
+        int https = upgrade ? existing.httpsPort() : plan.httpsPort();
+        try {
+            try {
+                String unpack = upgrade ? "replace" : "unpack";
+                changed = Archives.extract(payload, home, backup == null ? null : backup.resolve("defaults-" + payload.version()), layout.count(),
+                        (detail, fraction) -> event(unpack, "active", detail, fraction));
+                done(unpack, upgrade ? "Program files replaced; configuration and data kept" : "Engine unpacked");
+                begin("launcher");
+                for (String name : List.of("oieserver", "oieservice", "oiecommand"))
+                    if (!Files.isRegularFile(payload.launcher(home, name))) throw new IOException("Missing native launcher: " + name);
+                done("launcher", "Server, service and command line");
+                begin("java");
+                Path options = FilesSupport.safeTarget(home, "conf/custom.vmoptions");
+                List<String> lines = new ArrayList<>(Files.readAllLines(options).stream().filter(line -> !line.strip().startsWith("-java-cmd")).toList());
+                selectedJava = plan.javaCmd().equals(Model.BUNDLED) ? payload.engineJava(home) : Model.expand(plan.javaCmd()).toRealPath();
+                int marker = lines.indexOf("# Add custom options above this comment."); lines.add(marker < 0 ? lines.size() : marker, "-java-cmd " + selectedJava);
+                Files.writeString(options, String.join("\n", lines) + "\n"); done("java", plan.javaCmd().equals(Model.BUNDLED) ? "Bundled Java" : selectedJava.toString());
+                Files.createDirectories(home.resolve("logs")); Files.createDirectories(home.resolve("appdata"));
+                begin("configure");
+                Map<String, String> settings = new LinkedHashMap<>(); settings.put("version", payload.version());
+                if (!upgrade) {
+                    settings.put("http.port", String.valueOf(plan.httpPort())); settings.put("https.port", String.valueOf(plan.httpsPort()));
+                    String keystore = Model.password(); settings.put("keystore.storepass", keystore); settings.put("keystore.keypass", keystore);
+                    settings.put("server.initialadminpassword", plan.adminPassword()); passwordPending = true;
+                    if (!plan.database().equals("derby")) {
+                        settings.put("database", plan.database()); settings.put("database.url", plan.databaseUrl());
+                        settings.put("database.username", plan.databaseUsername()); settings.put("database.password", plan.databasePassword());
+                    }
+                }
+                FilesSupport.properties(properties, settings, Set.of()); done("configure", upgrade ? "Existing database, ports and credentials kept" : "Database, ports and initial password written");
+                String now = Instant.now().toString(); receipt.put("version", payload.version()).put("archive", payload.manifest.path("archive").asText())
+                        .put("archiveSha256", payload.sourceHash())
+                        .put("launcherCommit", payload.manifest.path("launcher").path("commit").asText()).put("updatedAt", now)
+                        .put("installer", "jpackage").put("home", home.toString()).put("nativeEngine", true).put("javaCmd", selectedJava.toString())
+                        .put("invokingUser", Privileges.invokingUser()).put("invokingHome", Privileges.invokingHome().toString()).put("invokingUid", Privileges.invokingUid());
+                if (!receipt.has("installedAt")) receipt.put("installedAt", now);
+                receipt.remove(List.of("service", "migrationPending", "pendingPayloadSha256", "legacyInstall4j", "rolledBack"));
+                receipt.put("httpsPort", https); receipt.putNull("pid");
+                if (upgrade) {
+                    var history = receipt.has("history") && receipt.path("history").isArray() ? receipt.withArray("history") : receipt.putArray("history");
+                    history.addObject().put("from", existing.version()).put("to", payload.version()).put("at", now).put("backup", home.relativize(backup).toString());
+                }
+                writeTools(home, receipt);
+                begin("plugins");
+                ObjectNode installed = receipt.path("plugins").isObject() ? (ObjectNode)receipt.path("plugins") : receipt.putObject("plugins");
+                for (var plugin : payload.plugins) if (plan.plugins().get(plugin.id())) {
+                    Archives.plugin(payload, plugin, home, backup == null ? null : backup.resolve("program/extensions"));
+                    installed.set(plugin.id(), plugin.metadata()); receipt.set("plugins", installed);
+                    writeTools(home, receipt); log.accept("Installed " + plugin.name() + " " + plugin.version());
+                }
+                receipt.set("pluginSelection", Json.MAPPER.valueToTree(plan.plugins())); writeTools(home, receipt);
+                long selected = plan.plugins().values().stream().filter(Boolean::booleanValue).count();
+                done("plugins", selected + " selected; existing unselected add-ons kept");
+                Services.permissions(home, plan.service());
+                begin("start"); offset = Readiness.offset(home);
+                if (plan.service()) {
+                    receipt.set("service", Services.install(home, record -> {
+                        receipt.set("service", record);
+                        try { writeTools(home, receipt); } catch (Exception e) { throw new RuntimeException("Cannot save the service receipt", e); }
+                    })); alive = () -> true;
+                } else {
+                    receipt.putNull("service"); long pid = NativeProcesses.start(home, payload);
+                    receipt.put("pid", pid); alive = () -> ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
+                }
+                writeTools(home, receipt); done("start", plan.service() ? "Registered the " + Services.supported() + " service" : "Process " + receipt.path("pid").asLong());
+            } catch (Exception failure) {
+                rollback(home, existing, homeExisted, backup, layout, plan);
+                throw failure;
+            }
+            begin("ready");
+            Readiness.started(home, offset, payload.version(), https, alive);
+            done("ready", "Open Integration Engine " + payload.version() + " is running");
+            if (passwordPending) {
+                begin("secure"); FilesSupport.properties(properties, Map.of(), Set.of("server.initialadminpassword")); passwordPending = false;
+                done("secure", "Removed the initial password from the settings file");
+            }
+        } finally {
+            // The engine reads the initial password once, when it creates its database. Never leave it on disk.
+            if (passwordPending && Files.isRegularFile(properties)) FilesSupport.properties(properties, Map.of(), Set.of("server.initialadminpassword"));
         }
-        writeTools(home, receipt);
-        begin("plugins");
-        ObjectNode installed = receipt.path("plugins").isObject() ? (ObjectNode)receipt.path("plugins") : receipt.putObject("plugins");
-        for (var plugin : payload.plugins) if (plan.plugins().get(plugin.id())) {
-            Archives.plugin(payload, plugin, home, backup == null ? null : backup.resolve("program/extensions"));
-            installed.set(plugin.id(), plugin.metadata()); receipt.set("plugins", installed);
-            writeTools(home, receipt); log.accept("Installed " + plugin.name() + " " + plugin.version());
-        }
-        receipt.set("pluginSelection", Json.MAPPER.valueToTree(plan.plugins())); writeTools(home, receipt);
-        long selected = plan.plugins().values().stream().filter(Boolean::booleanValue).count();
-        done("plugins", selected + " selected; existing unselected add-ons kept");
-        Services.permissions(home, plan.service());
-        begin("start"); long offset = Readiness.offset(home); BooleanSupplier alive;
-        if (plan.service()) {
-            receipt.set("service", Services.install(home, record -> {
-                receipt.set("service", record);
-                try { writeTools(home, receipt); } catch (Exception e) { throw new RuntimeException("Cannot save the pending service receipt", e); }
-            })); alive = () -> true;
-        } else {
-            receipt.putNull("service"); long pid = NativeProcesses.start(home, payload);
-            receipt.put("pid", pid); alive = () -> ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
-        }
-        writeTools(home, receipt); done("start", plan.service() ? "Registered " + Services.supported() + " service" : "Process " + receipt.path("pid").asLong());
         String base = "https://localhost:" + https;
-        begin("ready");
-        if (upgrade) Readiness.started(home, offset, payload.version(), https, alive);
-        else Readiness.login(base, plan.adminPassword(), payload.version(), alive);
-        done("ready", "Open Integration Engine " + payload.version() + " is running");
-        if (!upgrade) { begin("secure"); FilesSupport.properties(properties, Map.of(), Set.of("server.initialadminpassword")); done("secure", "Removed initial password from settings"); }
-        Services.permissions(home, plan.service());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("mode", destination.mode()); result.put("version", payload.version()); result.put("url", base); result.put("home", home.toString());
         result.put("service", receipt.get("service")); result.put("pid", receipt.path("pid").asLong());
-        result.put("uninstall", Model.WINDOWS ? "& " + Privileges.powershell(home.resolve("oie-uninstall.exe").toString()) : FilesSupport.quote(home.resolve("oie-uninstall").toString()));
+        result.put("uninstall", Model.WINDOWS ? "& " + Privileges.powershell(home.resolve("uninstall.exe").toString()) : FilesSupport.quote(home.resolve("uninstall").toString()));
         result.put("plugins", receipt.get("plugins"));
         if (upgrade && Files.isDirectory(home.resolve("extensions"))) {
             try (var entries = Files.list(home.resolve("extensions"))) {
@@ -214,14 +233,45 @@ final class Installer {
         else { result.put("from", existing.version()); result.put("backup", backup.toString()); result.put("changedConf", changed); }
         return result;
     }
+    /**
+     * install4j's rollback: remove the new program files and registrations, keep the user's settings and data.
+     * The previous program files were already removed, as install4j's UninstallPreviousAction does; they remain in the backup.
+     */
+    private void rollback(Path home, Model.Existing existing, boolean homeExisted, Path backup, Archives.Layout layout, Model.Plan plan) {
+        log.accept("Rolling back: removing the new program files and registrations");
+        List<String> problems = new ArrayList<>();
+        try { Services.stop(home, true); } catch (Exception e) { problems.add(e.getMessage()); }
+        try { NativeProcesses.removeTools(home); } catch (Exception e) { problems.add(e.getMessage()); }
+        try {
+            if (existing == null) {
+                if (homeExisted) { try (var entries = Files.list(home)) { for (Path entry : entries.toList()) FilesSupport.deleteTree(entry); } }
+                else FilesSupport.deleteTree(home);
+            } else {
+                for (String top : layout.top()) if (!Archives.KEEP.contains(top) && !top.equals("extensions")) FilesSupport.deleteTree(home.resolve(top));
+                for (String extension : layout.extensions()) FilesSupport.deleteTree(home.resolve("extensions").resolve(extension));
+                for (var plugin : payload.plugins) if (plan.plugins().get(plugin.id())) FilesSupport.deleteTree(home.resolve("extensions").resolve(plugin.id()));
+                // The configuration returns to its state before the upgrade.
+                if (backup != null && Files.isDirectory(backup.resolve("conf"))) { FilesSupport.deleteTree(home.resolve("conf")); FilesSupport.copyTree(backup.resolve("conf"), home.resolve("conf")); }
+                ObjectNode receipt = Json.object().put("version", existing.version()).put("archiveSha256", "").put("launcherCommit", "").put("home", home.toString())
+                        .put("rolledBack", true).put("backup", backup == null ? "" : backup.toString());
+                Json.write(home.resolve(Model.RECEIPT), receipt, false);
+            }
+        } catch (Exception e) { problems.add(e.getMessage()); }
+        if (!problems.isEmpty()) log.accept("Rollback incomplete: " + String.join("; ", problems));
+        else log.accept(existing == null ? "Rolled back: the new engine was removed" : "Rolled back: settings and data are kept; the previous program files are in " + backup);
+    }
     private static void stopExisting(Path home, Model.Existing existing, Consumer<String> log) throws Exception {
         if (!existing.running()) {
-            if (existing.managed()) Services.stop(home, existing.service(), false);
+            if (existing.service() != null) Services.stop(home, false);
             return;
         }
         if (!existing.managed()) throw new IOException("Stop the unmanaged engine before continuing.");
-        Services.stop(home, existing.service(), false);
-        if (!Model.engineProcesses(home).isEmpty()) { log.accept("Requesting graceful engine shutdown"); NativeProcesses.stopOwned(home); }
+        Services.stop(home, false);
+        if (!Model.engineProcesses(home).isEmpty()) {
+            // install4j asks the user to close a running engine on Windows; it cannot stop a console window.
+            if (Model.WINDOWS) throw new IOException("Close the running engine (oieserver.exe) and try again. No program files were replaced.");
+            log.accept("Requesting graceful engine shutdown"); NativeProcesses.stopOwned(home);
+        }
         Instant deadline = Instant.now().plusSeconds(60);
         while (Instant.now().isBefore(deadline)) {
             if (Model.engineProcesses(home).isEmpty() && Model.portFree(existing.httpsPort())) return;
@@ -231,7 +281,7 @@ final class Installer {
     }
     private boolean toolsWritten;
     private void writeTools(Path home, ObjectNode receipt) throws Exception {
-        Json.write(home.resolve(Model.RECEIPT), receipt);
+        Json.write(home.resolve(Model.RECEIPT), receipt, false);
         if (!toolsWritten) { NativeProcesses.tools(home, payload, payload.version()); toolsWritten = true; }
     }
     static void uninstall(Path path) throws Exception {
@@ -249,8 +299,9 @@ final class Installer {
             if (existing.receipt().hasNonNull("invokingUser")) System.setProperty("oie.invoking.user", existing.receipt().path("invokingUser").asText());
             if (existing.receipt().hasNonNull("invokingUid")) System.setProperty("oie.invoking.uid", existing.receipt().path("invokingUid").asText());
             stopExisting(home, existing, System.out::println);
-            Services.stop(home, existing.service(), true);
+            Services.stop(home, true);
             if (!Model.engineProcesses(home).isEmpty()) throw new IOException("The engine still runs. Nothing removed.");
+            NativeProcesses.removeTools(home);
             if (Model.WINDOWS) { NativeProcesses.windowsRemove(home); System.out.println("Removal scheduled after the uninstaller exits: " + home); }
             else { FilesSupport.deleteTree(home); System.out.println("Removed " + home); }
         }

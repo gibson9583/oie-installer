@@ -217,7 +217,7 @@ def build_payload(version: str, engine_repo: Path, platform: str, refresh: bool 
     return manifest
 
 
-APP_NAME = "OIE Installer JavaFX"
+APP_NAME = "Open Integration Engine Installer"
 WINSW_VERSION = "2.12.0"
 WINSW_SHA256 = "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
 
@@ -226,9 +226,48 @@ def executable(java_home: Path, name: str) -> str:
     return str(java_home / "bin" / (name + (".exe" if sys.platform == "win32" else "")))
 
 
-def native_payload(java_home: Path, env: dict) -> dict:
-    """java_home: the JDK whose jpackage and runtime become the engine's launchers and Java."""
-    """Stage verified release files and a separate, native engine image at build time."""
+# Modules the engine launchers need when the engine runs on an installed Java (the no-JRE media).
+LAUNCHER_MODULES = "java.base,java.desktop,java.prefs,java.sql,jdk.unsupported"
+# install4j's init header for oieservice, so /etc/init.d/oieservice can link to it.
+INIT_HEADER = """# chkconfig:         2345 75 15
+# description:       oieservice
+### BEGIN INIT INFO
+# Provides:          oieservice
+# Required-Start:    $local_fs $network $remote_fs $syslog $time
+# Required-Stop:     $local_fs $network $remote_fs $syslog $time
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Open Integration Engine Service
+### END INIT INFO
+"""
+
+
+def require_administrator(exe: Path) -> None:
+    """Give oiecommand.exe install4j's requireAdministrator execution level."""
+    kits = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Windows Kits/10/bin"
+    tools = sorted(kits.glob("10.*/x64/mt.exe")) or sorted(kits.glob("10.*/x86/mt.exe"))
+    if not tools:
+        fail("mt.exe from the Windows SDK is required to mark oiecommand.exe for administrator elevation")
+    mt, manifest = str(tools[-1]), ROOT / "target/oiecommand.manifest"
+    manifest.unlink(missing_ok=True)
+    subprocess.run([mt, "-nologo", f"-inputresource:{exe};#1", f"-out:{manifest}"], check=False)
+    level = '<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>'
+    text = manifest.read_text(encoding="utf-8") if manifest.is_file() else \
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"></assembly>'
+    if "requestedExecutionLevel" in text:
+        text = re.sub(r"<requestedExecutionLevel[^>]*/>", level, text)
+    else:
+        text = text.replace("</assembly>", '<trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security><requestedPrivileges>'
+                            + level + "</requestedPrivileges></security></trustInfo></assembly>")
+    manifest.write_text(text, encoding="utf-8")
+    subprocess.run([mt, "-nologo", "-manifest", str(manifest), f"-outputresource:{exe};#1"], check=True)
+
+
+def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dict:
+    """Stage the verified release and a native engine image built with java_home's jpackage.
+
+    With bundled_java the engine image carries a full Java runtime (install4j's -with-JRE media). Without it,
+    the image carries only what its launchers need, and the engine runs on an installed Java 17 or later."""
     manifest = json.loads((PAYLOAD / "manifest.json").read_text())
     source = manifest.get("sourceArchive", {"name": manifest["archive"], "sha256": manifest["files"].get(manifest["archive"]), "size": manifest["size"]})
     archive = PAYLOAD / source["name"]
@@ -299,12 +338,12 @@ def native_payload(java_home: Path, env: dict) -> dict:
     relative_home = "$APPDIR/../../../.." if not windows else "$APPDIR/.."
     args = [executable(java_home, "jpackage"), "--type", "app-image", "--name", name, "--dest", str(native_out),
             "--input", str(inputs), "--main-jar", "oie-installer-jpackage.jar", "--main-class", "org.openintegrationengine.installer.EngineBootstrap",
-            "--app-version", manifest["version"], "--vendor", "Open Integration Engine contributors", "--add-modules", "ALL-MODULE-PATH",
+            "--app-version", manifest["version"], "--vendor", "Open Integration Engine contributors", "--add-modules", "ALL-MODULE-PATH" if bundled_java else LAUNCHER_MODULES,
             "--jlink-options", "--strip-debug --no-man-pages --no-header-files",
             "--java-options", "-Doie.engine.home=" + relative_home, "--java-options", "-Doie.engine.role=server"]
     launcher_configs = ROOT / "target/engine-launchers"
     launcher_configs.mkdir(exist_ok=True)
-    for launcher, role in [("oieserver", "server"), ("oieservice", "service"), ("oiecommand", "command"), ("oie-uninstall", "uninstall")]:
+    for launcher, role in [("oieserver", "server"), ("oieservice", "service"), ("oiecommand", "command"), ("uninstall", "uninstall")]:
         if launcher == name:
             continue
         props = launcher_configs / (launcher + ".properties")
@@ -326,6 +365,7 @@ def native_payload(java_home: Path, env: dict) -> dict:
         runtime = ".launcher/OIE Engine.app/Contents/runtime/Contents/Home/bin/java"
     elif windows:
         shutil.copytree(native_out / name, stage, dirs_exist_ok=True)
+        require_administrator(stage / "oiecommand.exe")
         runtime = "runtime/bin/java.exe"
         vendor = cache_dir() / "vendor" / f"WinSW-{WINSW_VERSION}-x64.exe"
         download(f"https://github.com/winsw/winsw/releases/download/v{WINSW_VERSION}/WinSW-x64.exe", 18243033, WINSW_SHA256, vendor)
@@ -338,7 +378,10 @@ def native_payload(java_home: Path, env: dict) -> dict:
     if not windows:
         for launcher in ("oieserver", "oieservice", "oiecommand"):
             native = f".launcher/OIE Engine.app/Contents/MacOS/{launcher}" if mac else f".launcher/oieserver/bin/{launcher}"
-            (stage / launcher).write_text('#!/bin/sh\nOIE_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1\ncd "$OIE_HOME" || exit 1\nexec "$OIE_HOME/' + native + '" "$@"\n')
+            # Resolve /usr/local/bin and /etc/init.d links to the engine folder.
+            (stage / launcher).write_text("#!/bin/sh\n" + (INIT_HEADER if launcher == "oieservice" else "")
+                                          + 'self=$0\nwhile [ -h "$self" ]; do\n  link=$(readlink "$self")\n  case $link in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac\ndone\n'
+                                          + 'OIE_HOME=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P) || exit 1\ncd "$OIE_HOME" || exit 1\nexec "$OIE_HOME/' + native + '" "$@"\n')
             (stage / launcher).chmod(0o755)
     # Both launcher roles consume the shipped OIE includes and custom.vmoptions.
     server_options = (stage / "oieserver.vmoptions").read_text()
@@ -358,7 +401,7 @@ def native_payload(java_home: Path, env: dict) -> dict:
             relative = path.relative_to(PAYLOAD).as_posix()
             files[relative] = sha256_file(path)
             modes[relative] = 0o755 if path.stat().st_mode & 0o111 else 0o644
-    manifest.update({"format": 2, "sourceArchive": source, "files": files, "modes": modes, "engineJava": runtime,
+    manifest.update({"format": 2, "sourceArchive": source, "files": files, "modes": modes, "engineJava": runtime, "bundledJava": bundled_java,
                      "directories": [p.relative_to(destination).as_posix() for p in sorted(destination.rglob("*")) if p.is_dir()],
                      "engineLaunchers": {n: n + (".exe" if windows else "") for n in ("oieserver", "oieservice", "oiecommand")},
                      "engineRuntime": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
@@ -367,7 +410,9 @@ def native_payload(java_home: Path, env: dict) -> dict:
     manifest["launcher"]["source"] = "jpackage engine image / EngineBootstrap.java"
     if windows:
         manifest["serviceWrapper"] = {"name": "WinSW", "version": WINSW_VERSION, "sha256": WINSW_SHA256}
-    (PAYLOAD / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    staged = PAYLOAD / "manifest.json.tmp"
+    staged.write_text(json.dumps(manifest, indent=2) + "\n")
+    os.replace(staged, PAYLOAD / "manifest.json")
     old = PAYLOAD / source["name"]
     if old.is_file():
         old.unlink()  # The immutable, verified source archive remains in the shared download cache.
@@ -375,15 +420,6 @@ def native_payload(java_home: Path, env: dict) -> dict:
         shutil.rmtree(PAYLOAD / "launcher")
     print(f"Pinned {len(files)} staged payload files; no compressed engine archive is shipped", flush=True)
     return manifest
-
-
-def link_or_copy(source: Path, target: Path) -> None:
-    source, target = Path(source), Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(source, target)
-    except OSError:
-        shutil.copyfile(source, target)
 
 
 def verify_packaged_payload(directory: Path) -> None:
@@ -450,24 +486,55 @@ VIAddVersionKey "FileDescription" "Open Integration Engine Installer"
 VIAddVersionKey "FileVersion" "{version}"
 Section
   InitPluginsDir
-  SetOutPath "$PLUGINSDIR\\OIE Installer JavaFX"
+  SetOutPath "$PLUGINSDIR\\{APP_NAME}"
   File /r "{nsis(str(image))}\\*.*"
-  ExecWait '"$PLUGINSDIR\\OIE Installer JavaFX\\OIE Installer JavaFX.exe"' $0
+  ExecWait '"$PLUGINSDIR\\{APP_NAME}\\{APP_NAME}.exe"' $0
   SetErrorLevel $0
 SectionEnd
 ''', encoding="utf-8")
     subprocess.run([compiler, "/V3", str(script)], check=True)
 
 
-def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path) -> None:
-    for home in (java_home, engine_java_home):
-        if not Path(executable(home, "jpackage")).is_file():
-            fail(f"{home} has no jpackage. Select a full JDK 21 or later.")
-    env = dict(os.environ, JAVA_HOME=str(java_home), PATH=str(java_home / "bin") + os.pathsep + os.environ.get("PATH", ""))
-    print("Compiling the native JavaFX wizard (tests skipped)", flush=True)
-    maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
-    subprocess.run([maven, "-B", "-Dmaven.test.skip=true", "package"], cwd=ROOT, env=env, check=True)
-    native_payload(engine_java_home, dict(env, JAVA_HOME=str(engine_java_home)))
+def media_name(version: str, bundled_java: bool) -> str:
+    """install4j's media file names: oie_<platform>_<version>[-with-JRE]."""
+    underscored, jre, arm = version.replace(".", "_"), "-with-JRE" if bundled_java else "", machine() == "arm64"
+    if sys.platform == "win32":
+        return f"oie_windows-{machine()}_{underscored}{jre}.exe"
+    if sys.platform == "darwin":
+        return f"oie_macos_{underscored}-{'aarch' if arm else 'x86'}{jre}.dmg"
+    # install4j ships one Unix installer; a native installer needs one per CPU, so ARM64 adds a suffix.
+    return f"oie_unix_{underscored}{'-aarch64' if arm else ''}{jre}.sh"
+
+
+def unix_installer(image: Path, destination: Path) -> None:
+    """A self-extracting shell installer, like install4j's oie_unix_*.sh: run it as root, or with -q -dir <folder>."""
+    arch = "aarch64" if machine() == "arm64" else "x86_64"
+    header = f"""#!/bin/sh
+# Open Integration Engine Installer
+case "$(uname -m)" in
+  {arch}{"|arm64" if arch == "aarch64" else "|amd64"}) ;;
+  *) echo "This installer is for {arch} Linux. Use the oie_unix installer for $(uname -m)." >&2; exit 1 ;;
+esac
+if [ "$(id -u)" != 0 ]; then
+  command -v sudo >/dev/null 2>&1 || {{ echo "Run this installer as root." >&2; exit 1; }}
+  exec sudo --preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR sh "$0" "$@"
+fi
+dir=$(mktemp -d "${{TMPDIR:-/tmp}}/oie-installer.XXXXXX") || exit 1
+trap 'rm -rf "$dir"' EXIT HUP INT TERM
+skip=$(awk '/^__OIE_INSTALLER_PAYLOAD__$/ {{ print NR + 1; exit }}' "$0")
+tail -n +"$skip" "$0" | tar -xzf - -C "$dir" || {{ echo "The installer is damaged." >&2; exit 1; }}
+"$dir/{APP_NAME}/bin/{APP_NAME}" "$@"
+exit $?
+__OIE_INSTALLER_PAYLOAD__
+"""
+    with open(destination, "wb") as out:
+        out.write(header.encode("utf-8"))
+        with tarfile.open(fileobj=out, mode="w:gz") as archive:
+            archive.add(image, arcname=image.name)
+    destination.chmod(0o755)
+
+
+def app_image(version: str, java_home: Path, env: dict, image_out: Path) -> Path:
     target = ROOT / "target"
     inputs = target / "app-input"
     if inputs.exists():
@@ -476,8 +543,7 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
     shutil.copyfile(target / "oie-installer-jpackage.jar", inputs / "oie-installer-jpackage.jar")
     shutil.copytree(target / "lib", inputs / "lib")
     if sys.platform != "darwin":
-        shutil.copytree(PAYLOAD, inputs / "payload", copy_function=link_or_copy)
-    image_out = target / "image"
+        shutil.copytree(PAYLOAD, inputs / "payload")
     if image_out.exists():
         shutil.rmtree(image_out)
     args = [executable(java_home, "jpackage"), "--type", "app-image", "--name", APP_NAME,
@@ -488,7 +554,7 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
             "--jlink-options", "--strip-debug --no-man-pages --no-header-files",
             "--java-options", "-Dfile.encoding=UTF-8"]
     if sys.platform == "darwin":
-        args += ["--icon", str(ROOT / "packaging/icon.icns"), "--mac-package-identifier", "org.openintegrationengine.installer.javafx",
+        args += ["--icon", str(ROOT / "packaging/icon.icns"), "--mac-package-identifier", "org.openintegrationengine.installer",
                  "--mac-package-name", "OIE Installer"]
     elif sys.platform == "win32":
         args += ["--icon", str(ROOT / "packaging/icon.ico")]
@@ -504,36 +570,44 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
         shutil.copytree(PAYLOAD, image / "Contents/app/payload")
         subprocess.run(["codesign", "--force", "--sign", "-", str(image)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(image)], check=True)
-    payload_in_image = image / "Contents/app/payload" if sys.platform == "darwin" else image / ("app/payload" if sys.platform == "win32" else "lib/app/payload")
-    verify_packaged_payload(payload_in_image)
+    verify_packaged_payload(image / "Contents/app/payload" if sys.platform == "darwin" else image / ("app/payload" if sys.platform == "win32" else "lib/app/payload"))
     print(f"Built app: {image}", flush=True)
-    if package_type == "app-image":
-        return
-    package_out = target / "packages"
-    if package_out.exists():
-        shutil.rmtree(package_out)
-    package_out.mkdir()
-    if sys.platform == "darwin" and package_type == "dmg":
-        macos_dmg(image, package_out / (APP_NAME + "-" + version + ".dmg"))
-    elif sys.platform == "win32" and package_type == "exe":
-        windows_bootstrap(image, package_out / "OIE-Installer.exe", version)
-    elif package_type == "tar.gz":
-        # Like install4j's Unix media: a self-contained folder; run its bin launcher as root.
-        with tarfile.open(package_out / (APP_NAME + ".tar.gz"), "w:gz") as archive:
-            archive.add(image, arcname=image.name)
-    else:
-        fail(f"{package_type} packages are not built on {sys.platform}")
+    return image
+
+
+def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path, variants: list) -> None:
+    for home in (java_home, engine_java_home):
+        if not Path(executable(home, "jpackage")).is_file():
+            fail(f"{home} has no jpackage. Select a full JDK 21 or later.")
+    env = dict(os.environ, JAVA_HOME=str(java_home), PATH=str(java_home / "bin") + os.pathsep + os.environ.get("PATH", ""))
+    print("Compiling the installer (tests skipped)", flush=True)
+    maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
+    subprocess.run([maven, "-B", "-Dmaven.test.skip=true", "package"], cwd=ROOT, env=env, check=True)
     out = ROOT / "dist"
     out.mkdir(exist_ok=True)
-    architecture = machine()
-    packages = list(package_out.glob("*." + package_type))
-    if not packages:
-        fail("Packaging produced no " + package_type + " package")
-    for package in packages:
-        if package_type == "dmg":
+    built = []
+    for bundled_java in variants:
+        print(f"== {'With' if bundled_java else 'Without'} a bundled engine Java runtime", flush=True)
+        native_payload(engine_java_home, dict(env, JAVA_HOME=str(engine_java_home)), bundled_java)
+        # target/image holds the -with-JRE application; target/image-no-jre the other.
+        image = app_image(version, java_home, env, ROOT / ("target/image" if bundled_java else "target/image-no-jre"))
+        if package_type == "app-image":
+            continue
+        package_out = ROOT / "target/packages"
+        if package_out.exists():
+            shutil.rmtree(package_out)
+        package_out.mkdir()
+        package = package_out / media_name(version, bundled_java)
+        if sys.platform == "darwin" and package_type == "dmg":
+            macos_dmg(image, package)
             verify_macos_dmg(package)
-        platform_name = "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
-        destination = out / f"OIE-Installer-JavaFX-{version}-{platform_name}-{architecture}.{package_type}"
+        elif sys.platform == "win32" and package_type == "exe":
+            windows_bootstrap(image, package, version)
+        elif sys.platform.startswith("linux") and package_type == "sh":
+            unix_installer(image, package)
+        else:
+            fail(f"{package_type} packages are not built on {sys.platform}")
+        destination = out / package.name
         # Replace the artifact atomically: an older DMG may still be mounted.
         partial = destination.with_name(destination.name + ".part")
         try:
@@ -543,15 +617,16 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
         finally:
             partial.unlink(missing_ok=True)
         destination.with_name(destination.name + ".sha256").write_text(f"{digest}  {destination.name}\n")
+        built.append(destination.name)
         print(f"Built {destination}\nSHA-256: {digest}", flush=True)
-    receipt = {"engineVersion": version, "javaHome": str(java_home), "javaVersion": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
+    receipt = {"engineVersion": version, "media": built, "javaHome": str(java_home), "javaVersion": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
                "engineJavaHome": str(engine_java_home), "engineJavaVersion": subprocess.check_output([executable(engine_java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
-               "javafxVersion": "21.0.13", "architecture": architecture, "application": str(image), "testsRun": False}
+               "javafxVersion": "21.0.13", "architecture": machine(), "testsRun": False}
     (out / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the alternative JavaFX + jpackage OIE Installer")
+    parser = argparse.ArgumentParser(description="Build the Open Integration Engine Installer")
     parser.add_argument("--version", default="latest", help="Engine release (default: latest published)")
     parser.add_argument("--engine-repo", type=Path, default=ROOT.parent / "oie", help="Engine clone containing the release tag")
     parser.add_argument("--java-home", type=Path, help="JDK 21+ used to compile and bundle the installer runtime")
@@ -560,7 +635,8 @@ def main() -> int:
     parser.add_argument("--refresh", action="store_true", help="Download release assets again rather than reusing verified cache entries")
     parser.add_argument("--payload-only", action="store_true", help="Prepare the pinned payload and stop")
     parser.add_argument("--app-only", action="store_true", help="Reuse the existing pinned payload and rebuild the app")
-    parser.add_argument("--type", default="dmg" if sys.platform == "darwin" else "exe" if sys.platform == "win32" else "tar.gz", choices=["app-image", "dmg", "exe", "tar.gz"])
+    parser.add_argument("--type", default="dmg" if sys.platform == "darwin" else "exe" if sys.platform == "win32" else "sh", choices=["app-image", "dmg", "exe", "sh"])
+    parser.add_argument("--media", default="both", choices=["both", "with-jre", "no-jre"], help="install4j media variants: with and without a bundled engine Java runtime")
     args = parser.parse_args()
     if args.app_only:
         version = json.loads((PAYLOAD / "manifest.json").read_text())["version"]
@@ -580,7 +656,8 @@ def main() -> int:
             if not executable:
                 fail("Install a JDK 21+ and pass --java-home")
             java_home = Path(executable).resolve().parent.parent
-    build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve())
+    variants = {"both": [False, True], "with-jre": [True], "no-jre": [False]}[args.media]
+    build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve(), variants)
     return 0
 
 

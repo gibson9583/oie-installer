@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   installer:
-    # The installer platforms of the OIE install4j media: macOS ARM/Intel, Windows x64/ARM and Unix.
+    # The OIE install4j media: each platform with and without a bundled engine Java runtime.
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -23,14 +23,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS runners are disabled to save Actions minutes; uncomment to build the DMGs.
-          # - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
-          # - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
+          - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
+          - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
           - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
           # JavaFX 21 has no Windows ARM64 build: the wizard runs as x64; the engine runtime is native ARM64.
           - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-architecture: x64 }
-          - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: tar.gz }
-          - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: tar.gz }
+          - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: sh }
+          - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: sh }
     defaults:
       run:
         shell: bash
@@ -101,7 +100,7 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             python -u ci/smoke_install.py
           else
-            sudo "$(command -v python3)" -u ci/smoke_install.py
+            sudo env JAVA_HOME="$JAVA_HOME" "$(command -v python3)" -u ci/smoke_install.py
           fi
       - name: Upload installer
         uses: actions/upload-artifact@v7

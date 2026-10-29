@@ -1,4 +1,4 @@
-# OIE Installer JavaFX design
+# Open Integration Engine Installer design
 
 This is a native-control counterpart of the sibling OIE Installer. Preserve its operational layout and product wording rather than introducing a new visual identity.
 

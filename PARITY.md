@@ -1,31 +1,50 @@
-# Install4j behavior and validation matrix
+# install4j parity
 
-Scope: macOS ARM64/x64, Windows x64/ARM64 and Linux x64/ARM64. OIE 4.7.0/install4j 13.1.1 is the source baseline. The JavaFX wizard, add-on choices and revised Welcome/Done styling are retained. This matrix describes implemented call paths. Each CI job installs a new engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, reinstalls it, and uninstalls it. It also upgrades a 4.6.0 install4j archive that has run once. Legacy install4j service migration still requires manual validation.
+The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of the 4.6.0 install4j installers. The **Record install4j installer output** workflow records that output. The CI smoke test checks this installer on each platform.
 
-| Behavior | Implementation and expected outcome | Evidence / validation |
+## Matches install4j
+
+| Item | install4j and this installer | Checked by |
 | --- | --- | --- |
-| License | Separate step 2 displays the bundled MPL 2.0 text and requires acceptance before Location; acceptance is retained during navigation and later steps are blocked if revoked | Released install4j LicenseScreen; native UI source/static render |
-| New install | Choose folder/runtime/ports/database/admin/service/add-ons, Review, elevate once, install/start/verify | Compilation and source tracing; manual execution pending |
-| Engine runtime | Independent bundled Java 21 default; external Java 17+ remains selectable | Native image/config and runtime file inspection |
-| Native launchers | Server/service/CLI launchers use the real released main classes and working directory. `oieservice` accepts install4j's `start`, `stop`, `restart`, `force-reload`, `status` and `run` verbs | CI smoke test on all six platforms |
-| Start Menu | Windows program group **Open Integration Engine** with the command line and **Uninstall Open Integration Engine**, removed by the uninstaller | CI smoke test on Windows |
-| Service default | On, independently switchable; starts at boot without interactive sign-in | System launchd/SCM code; manual boot validation pending |
-| Service identity | macOS installing user; Windows Local Service; independent of wizard lifetime | Plist/WinSW contracts and ownership code; manual validation pending |
-| Add-ons | All three bundled/default on, independent switches, selections included in Review | Release descriptor/version checks and static UI |
-| Reinstall/upgrade | Detect version, stop exact owned engine/service, back up conf/data/service/receipt, replace owned programs, keep configuration and custom extensions | Released layouts/source; manual migration validation pending |
-| Legacy service migration | Recognize install4j only by exact executable path; stop/back up/remove before system-service registration | Release configuration identifier/executable definitions; manual validation pending |
-| Stale Review | Reject changed destination mode or version before mutation | Action-time backend check |
-| Concurrent installers | Shared administrator destination lock; case-folded Windows lock key | Source inspection; manual concurrent execution pending |
-| Payload damage | Check every pinned file before stopping/replacing an engine | Build provenance and backend verification path |
-| Denied elevation | Return a readable cancellation/start error; no backend install begins. Private job cleanup also covers preparation failures | Helper protocol; manual OS-dialog validation pending |
-| Windows classpaths | Append Java's wildcard as classpath text after resolving the real lib directory; applies to elevation and independent uninstall | Windows forbids wildcard characters in Path components; source tracing |
-| Service-start failure | Pending service receipt is persisted before registration/start so retry/uninstall can find partial completion | Source ordering; manual failure validation pending |
-| Program/add-on replacement failure | Stop with an error; retain backup/completed changes; plugin move failure restores previous plugin directory | Source error flow; manual failure validation pending |
-| Readiness failure | Return an error with progress/log details; preserve installed state and backups | Actual engine login/version/startup-log contracts; manual validation pending |
-| Retry | Recheck location and Review; use installed version/receipt and a new backup, without assuming rollback | Source navigation/backend state; manual validation pending |
-| No-service mode | Start once in desktop user context; no boot registration. macOS uses a hangup-ignoring exec wrapper with redirected I/O, avoiding nohup's console-detach failure | Native process paths; manual engine validation pending |
-| Uninstall | Independent runtime/backend; confirmation, exact service ownership checks and graceful stop; Windows defers locked-file deletion | Source tracing; manual deletion validation pending |
-| UI | Shared header line, reviewed fonts/colors/controls, license, bundled runtime and system-service wording, matching Done composition | Static JavaFX scene verification |
-| Distribution | macOS ARM64/x64 DMG, Windows x64/ARM64 EXE, Linux x64/ARM64 tar.gz from one Actions matrix; checksums/receipt | Build logs and generated artifacts |
+| Media | `oie_windows-<arch>_<v>[-with-JRE].exe`, `oie_macos_<v>-<aarch\|x86>[-with-JRE].dmg`, `oie_unix_<v>[-with-JRE].sh` | Build |
+| License | The engine's MPL 2.0 `LICENSE.txt`, accepted before the folder step | Wizard |
+| Launchers | `oieserver`, `oieservice`, `oiecommand`; `.exe` on Windows | Smoke test |
+| `oieservice` commands | `start`, `stop`, `restart`, `force-reload`, `status`, `run`, `start-launchd`; `/install`, `/uninstall` on Windows | Smoke test |
+| `oiecommand.exe` | Requires administrator elevation | Smoke test |
+| Windows service | `Open Integration Engine Service`, no description, automatic, Local System, no failure actions | Smoke test |
+| macOS service | `/Library/LaunchDaemons/com.oie.oieservice.plist`: `<engine>/oieservice start-launchd`, `RunAtLoad` true, `KeepAlive` false, root | Smoke test |
+| Linux service | `/etc/systemd/system/oieservice.service`, byte for byte, enabled for `multi-user.target` and `graphical.target`, root | Smoke test |
+| Linux without systemd | `/etc/init.d/oieservice`, linked to `<engine>/oieservice`, with install4j's init header | Not run in CI |
+| Services per computer | One | Wizard and validation |
+| Start Menu | Group **Open Integration Engine**: **Open Integration Engine Service** and **Open Integration Engine** | Smoke test |
+| Apps & Features | Key `4145-9206-7630-8076`, `Open Integration Engine <version>`, publisher `Open Integration Engine Project` | Smoke test |
+| Linux links | `/usr/local/bin/oieservice`, `/usr/local/bin/oiecommand` | Smoke test |
+| macOS links | None | Smoke test |
+| Windows permissions | Unchanged; the folder inherits its parent's permissions | Code |
+| Uninstaller | `uninstall.exe` on Windows, `uninstall` on macOS and Linux | Smoke test |
+| Unattended mode | `-q -dir <folder>` | Smoke test |
+| Upgrade | Removes the previous program files and service, then installs; keeps the configuration and data | Smoke test |
+| Rollback | Removes the new files and registrations; keeps the configuration and data | Smoke test |
+| Running console engine on Windows | The user closes it; the installer does not end it | Smoke test |
 
-The installer does not claim database rollback, automatic background updates, install4j's "without JRE" and archive media, or publisher-signing parity. Those are separate from retaining the installation workflow and implementing native runtime/launcher/system-service/uninstall behavior on these two targets.
+## Differs from install4j
+
+| Item | install4j | This installer |
+| --- | --- | --- |
+| Installer interface | install4j wizard | JavaFX wizard with network, database, administrator, service and add-on steps |
+| Engine start | Does not start the engine | Starts the engine and waits for `server successfully started` |
+| Administrator password | Engine default | Generated or entered; removed from `conf/mirth.properties` after startup |
+| Add-ons | None | OIE Web Client, RBAC and Simple Channel History |
+| Backup | None | `conf` and `appdata` copied to `backups/<date>-<version>` before an upgrade |
+| Media without Java | Use an installed Java for the installer and the engine | The installer application has its own runtime; the engine uses an installed Java 17 or later |
+| Windows service program | `oieservice.exe` | `oie-service.exe` (WinSW 2.12.0), which runs `oieservice.exe` |
+| Windows ARM64 installer | Native | x64 installer application under emulation; native ARM64 engine runtime |
+| Linux ARM64 media | The `oie_unix` media | `oie_unix_<v>-aarch64[-with-JRE].sh` |
+| Single-instance check | install4j launchers allow one running copy | The engine fails to start when its ports are in use |
+| Signing | Signed by the OIE release pipeline | Ad-hoc signed on macOS, unsigned on Windows |
+
+## Not tested in CI
+
+- The wizard on a desktop, including the administrator approval prompts.
+- Linux systems without systemd.
+- External databases.

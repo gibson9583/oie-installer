@@ -1,17 +1,29 @@
 package org.openintegrationengine.installer;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.security.MessageDigest;
 import java.util.*;
-import java.util.regex.Pattern;
+import java.util.regex.*;
 import javax.xml.parsers.DocumentBuilderFactory;
 
-/** Native boot-time services, with migration of install4j and earlier user services. */
+/** The install4j service definitions: one engine service per computer, with install4j's names, files and accounts. */
 final class Services {
-    static String supported() { return Model.MAC ? "launchd" : Model.WINDOWS ? "Windows" : Files.isDirectory(Path.of("/run/systemd/system")) ? "systemd" : ""; }
+    static final String WINDOWS_NAME = "Open Integration Engine Service";
+    static final String LAUNCHD_LABEL = "com.oie.oieservice";
+    static final Path LAUNCHD_FILE = Path.of("/Library/LaunchDaemons", LAUNCHD_LABEL + ".plist");
+    static final String UNIT = "oieservice.service";
+    static final Path UNIT_FILE = Path.of("/etc/systemd/system", UNIT);
+    static final Path INITD_FILE = Path.of("/etc/init.d/oieservice");
+
+    /** install4j uses systemd when /run/systemd/system exists, otherwise /etc/init.d. */
+    static String supported() {
+        if (Model.MAC) return "launchd";
+        if (Model.WINDOWS) return "Windows";
+        if (Files.isDirectory(Path.of("/run/systemd/system"))) return "systemd";
+        return Files.isDirectory(INITD_FILE.getParent()) ? "init.d" : "";
+    }
     static String blocked(Path home) throws IOException {
         Path canonical = Model.canonical(home);
         if (Model.WINDOWS && canonical.toString().startsWith("\\\\")) return "Choose a local folder for a Windows service.";
@@ -20,195 +32,177 @@ final class Services {
                 return "macOS privacy protection prevents system services from reading ~/" + folder + ". Choose a folder outside Documents, Desktop and Downloads.";
         return "";
     }
-    static String label(Path home) throws Exception {
-        String path = home.toString(); if (Model.WINDOWS) path = path.toLowerCase(Locale.ROOT);
-        String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(path.getBytes(java.nio.charset.StandardCharsets.UTF_8))).substring(0, 8);
-        return Model.WINDOWS ? "oie" + hash : "org.openintegrationengine.engine." + hash;
-    }
     private static String xml(String value) { return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"); }
-    private static String systemd(String value) { return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("%", "%%") + "\""; }
-    static ObjectNode install(Path home, java.util.function.Consumer<ObjectNode> registered) throws Exception {
-        String reason = blocked(home); if (!reason.isEmpty()) throw new IOException(reason);
-        if (!Privileges.administrator()) throw new IOException("Administrator privileges are required to install a system service.");
-        String name = label(home); ObjectNode result = Json.object();
+
+    /** The engine service on this computer, installed by install4j or by this installer, with the program it runs. */
+    static ObjectNode find() throws Exception {
+        ObjectNode record = Json.object();
         if (Model.MAC) {
-            Path file = Path.of("/Library/LaunchDaemons", name + ".plist");
-            FilesSupport.safeTarget(file.getParent(), file.getFileName().toString());
-            Files.writeString(file, """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-                <plist version="1.0"><dict>
-                <key>Label</key><string>%s</string>
-                <key>ProgramArguments</key><array><string>%s/oieservice</string></array>
-                <key>WorkingDirectory</key><string>%s</string><key>UserName</key><string>%s</string>
-                <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-                <key>StandardOutPath</key><string>%s/logs/oieserver.out</string>
-                <key>StandardErrorPath</key><string>%s/logs/oieserver.out</string>
-                </dict></plist>
-                """.formatted(name, xml(home.toString()), xml(home.toString()), xml(Privileges.invokingUser()), xml(home.toString()), xml(home.toString())));
-            Model.command("chown", "root:wheel", file.toString()); Model.command("chmod", "644", file.toString());
-            result.put("kind", "launchd-system").put("name", name).put("file", file.toString()).put("user", Privileges.invokingUser())
-                    .put("start", "sudo launchctl bootstrap system " + FilesSupport.quote(file.toString())).put("stop", "sudo launchctl bootout system/" + name);
-            registered.accept(result); Model.command("launchctl", "bootstrap", "system", file.toString());
-        } else if (Model.WINDOWS) {
-            Path wrapper = home.resolve("oie-service.exe"), file = FilesSupport.safeTarget(home, "oie-service.xml");
-            if (!Files.isRegularFile(wrapper)) throw new IOException("The Windows service wrapper is missing.");
-            Files.writeString(file, """
-                <service><id>%s</id><name>Open Integration Engine · %s</name>
-                <description>Open Integration Engine</description>
-                <executable>%s</executable><workingdirectory>%s</workingdirectory>
-                <startmode>Automatic</startmode><delayedAutoStart>true</delayedAutoStart>
-                <serviceaccount><domain>NT AUTHORITY</domain><user>LocalService</user></serviceaccount>
-                <stoptimeout>60 sec</stoptimeout><stopparentprocessfirst>true</stopparentprocessfirst><onfailure action="restart" delay="10 sec"/>
-                <logpath>%s</logpath><log mode="roll"/>
-                </service>
-                """.formatted(name, name.substring(3), xml(home.resolve("oieservice.exe").toString()), xml(home.toString()), xml(home.resolve("logs").toString())));
-            result.put("kind", "windows").put("name", name).put("file", file.toString()).put("user", "NT AUTHORITY\\LocalService")
-                    .put("start", "sc.exe start " + name).put("stop", "sc.exe stop " + name);
-            registered.accept(result); Model.command(wrapper.toString(), "install"); Model.command(wrapper.toString(), "start");
-        } else if (supported().equals("systemd")) {
-            Path file = Path.of("/etc/systemd/system", name + ".service");
-            FilesSupport.safeTarget(file.getParent(), file.getFileName().toString());
-            Files.writeString(file, "[Unit]\nDescription=Open Integration Engine\nAfter=network-online.target\n\n[Service]\nType=simple\nUser=" + Privileges.invokingUser()
-                    + "\nWorkingDirectory=" + home.toString().replace("%", "%%") + "\nExecStart=" + systemd(home.resolve("oieservice").toString())
-                    + "\nRestart=on-failure\nTimeoutStopSec=60\n\n[Install]\nWantedBy=multi-user.target\n");
-            result.put("kind", "systemd-system").put("name", name + ".service").put("file", file.toString())
-                    .put("start", "sudo systemctl start " + name).put("stop", "sudo systemctl stop " + name);
-            registered.accept(result); Model.command("systemctl", "daemon-reload"); Model.command("systemctl", "enable", "--now", name + ".service");
-        } else throw new IOException("This system has no supported service manager.");
-        return result;
-    }
-    static void permissions(Path home, boolean service) throws Exception {
-        if (!Privileges.administrator()) return;
-        if (Model.MAC) {
-            Model.command("chown", "-R", Privileges.invokingUser(), home.toString());
-            for (String name : List.of("conf", "appdata", "logs", "backups")) if (Files.isDirectory(home.resolve(name))) Model.command("chmod", "700", home.resolve(name).toString());
-        } else if (Model.WINDOWS) {
-            Model.command("icacls.exe", home.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX", "/Q");
-            if (service) Model.command("icacls.exe", home.toString(), "/grant:r", "*S-1-5-19:(OI)(CI)RX", "/Q");
-            inherit(home);
-            // The engine writes conf, appdata and logs; Web Support deploys into webapps.
-            for (String name : List.of("conf", "appdata", "logs", "backups", "webapps")) {
-                Path folder = home.resolve(name); Files.createDirectories(folder);
-                List<String> args = new ArrayList<>(List.of("icacls.exe", folder.toString(), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", Privileges.invokingUser() + (service ? ":(OI)(CI)R" : ":(OI)(CI)M")));
-                if (service && !name.equals("backups")) args.add("*S-1-5-19:(OI)(CI)M");
-                args.add("/Q"); Model.command(args.toArray(String[]::new));
-                inherit(folder);
-            }
-            if (service) {
-                // Derby opens derby.log in the working directory before the engine redirects it.
-                Path derby = home.resolve("derby.log"); if (!Files.exists(derby)) Files.createFile(derby);
-                Model.command("icacls.exe", derby.toString(), "/grant:r", "*S-1-5-19:M", "/Q");
-            }
-        }
-    }
-    /** Replace the contents' ACLs with the folder's inheritable entries. icacls /T with /inheritance:r would leave files with empty ACLs. */
-    private static void inherit(Path folder) throws Exception {
-        try (var children = Files.list(folder)) {
-            for (Path child : children.toList()) Model.command("icacls.exe", child.toString(), "/reset", "/T", "/C", "/Q");
-        }
-    }
-    static void verifyRecord(Path home, JsonNode record) throws Exception {
-        String kind = record.path("kind").asText(), name = record.path("name").asText(); Path expected;
-        if (kind.startsWith("install4j-")) {
-            ObjectNode detected = legacy(home);
-            if (detected == null || !detected.path("name").asText().equals(name)) throw new IOException("The legacy service no longer belongs to this engine.");
-            return;
-        }
-        String label = label(home);
-        switch (kind) {
-            case "launchd-system" -> expected = Path.of("/Library/LaunchDaemons", label + ".plist");
-            case "systemd-system" -> expected = Path.of("/etc/systemd/system", label + ".service");
-            case "windows" -> expected = home.resolve("oie-service.xml");
-            case "launchd" -> expected = Privileges.invokingHome().resolve("Library/LaunchAgents/" + label + ".plist");
-            case "systemd" -> expected = Privileges.invokingHome().resolve(".config/systemd/user/" + label + ".service");
-            default -> throw new IOException("Unsupported service receipt: " + kind);
-        }
-        String expectedName = label + (kind.startsWith("systemd") ? ".service" : "");
-        if (!name.equals(expectedName) || !Path.of(record.path("file").asText()).toAbsolutePath().normalize().equals(expected.toAbsolutePath().normalize())) throw new IOException("The recorded service does not belong to this engine.");
-        if (kind.equals("windows")) {
-            String actual = queryWindowsBinary(name);
-            if (!actual.isEmpty() && !actual.equalsIgnoreCase(home.resolve("oie-service.exe").toString())) throw new IOException("Another service uses this name: " + name + " runs " + actual);
-        }
-    }
-    static void stop(Path home, JsonNode record, boolean remove) throws Exception {
-        if (record == null || record.isNull()) return;
-        verifyRecord(home, record); String kind = record.path("kind").asText(), name = record.path("name").asText();
-        if (kind.equals("windows") || kind.equals("install4j-windows")) {
-            String script = "$ErrorActionPreference='Stop'; $s=Get-Service -Name " + Privileges.powershell(name) + " -ErrorAction SilentlyContinue; if($s){if($s.Status -ne 'Stopped'){ $s.Stop(); $s.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(65)) }}";
-            Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
-            if (remove && !queryWindowsBinary(name).isEmpty()) Model.command("sc.exe", "delete", name);
-        } else if (kind.contains("launchd")) {
-            String domain = kind.equals("launchd") ? "gui/" + Privileges.invokingUid() : "system";
-            try { Model.command("launchctl", "bootout", domain + "/" + name); }
-            catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
-        } else {
-            List<String> args = new ArrayList<>(List.of("systemctl")); if (kind.equals("systemd")) args.add("--user");
-            args.addAll(remove ? List.of("disable", "--now", name) : List.of("stop", name));
-            try { Model.command(args.toArray(String[]::new)); }
-            catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
-        }
-        if (remove) {
-            if (record.hasNonNull("file")) Files.deleteIfExists(Path.of(record.path("file").asText()));
-            if (kind.contains("systemd")) Model.command("systemctl", "daemon-reload");
-        }
-    }
-    static void start(Path home, JsonNode record) throws Exception {
-        verifyRecord(home, record); String kind = record.path("kind").asText(), name = record.path("name").asText();
-        if (kind.equals("windows") || kind.equals("install4j-windows")) Model.command("sc.exe", "start", name);
-        else if (kind.contains("launchd")) {
-            String domain = kind.equals("launchd") ? "gui/" + Privileges.invokingUid() : "system";
-            try { Model.command("launchctl", "print", domain + "/" + name); Model.command("launchctl", "kickstart", domain + "/" + name); }
-            catch (IOException notLoaded) { Model.command("launchctl", "bootstrap", domain, record.path("file").asText()); }
-        } else Model.command("systemctl", kind.equals("systemd") ? "--user" : "--system", "start", name);
-    }
-    private static String queryWindowsBinary(String name) throws Exception {
-        String script = "$s=Get-CimInstance Win32_Service -Filter " + Privileges.powershell("Name='" + name.replace("'", "''") + "'")
-                + "; if($s){$p=$s.PathName.Trim(); if($p.StartsWith('\"')){$p.Split('\"')[1]}else{($p -split '\\s+')[0]}}";
-        String output = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
-        String path = output.lines().map(String::strip).filter(line -> !line.isEmpty()).reduce((first, last) -> last).orElse("");
-        return path.startsWith("\\\\?\\") ? path.substring(4) : path;
-    }
-    static boolean running(Path home, JsonNode record) throws Exception {
-        if (record == null || record.isNull()) return false;
-        verifyRecord(home, record);
-        String kind = record.path("kind").asText(), name = record.path("name").asText();
-        try {
-            if (kind.equals("windows") || kind.equals("install4j-windows"))
-                return Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded("(Get-Service -Name " + Privileges.powershell(name) + " -ErrorAction SilentlyContinue).Status")).equalsIgnoreCase("Running");
-            if (kind.contains("launchd")) return Model.command("launchctl", "print", (kind.equals("launchd") ? "gui/" + Privileges.invokingUid() : "system") + "/" + name).contains("state = running");
-            return Model.command("systemctl", kind.equals("systemd") ? "--user" : "--system", "is-active", name).equals("active");
-        } catch (IOException notRunning) { return false; }
-    }
-    static ObjectNode legacy(Path home) throws Exception {
-        if (Model.MAC) {
-            Path file = Path.of("/Library/LaunchDaemons/com.oie.oieservice.plist");
-            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return null;
+            if (!Files.isRegularFile(LAUNCHD_FILE, LinkOption.NOFOLLOW_LINKS)) return null;
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-            factory.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_DTD, ""); factory.setAttribute(javax.xml.XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-            var strings = factory.newDocumentBuilder().parse(file.toFile()).getElementsByTagName("string"); boolean belongs = false;
-            for (int i = 0; i < strings.getLength(); i++) {
-                String value = strings.item(i).getTextContent();
-                if (value.equals(home.resolve("oieservice").toString()) || value.equals(home.resolve("oieserver").toString())) belongs = true;
-            }
-            if (belongs) return Json.object().put("kind", "install4j-launchd").put("name", "com.oie.oieservice").put("file", file.toString());
+            var strings = factory.newDocumentBuilder().parse(LAUNCHD_FILE.toFile()).getElementsByTagName("string");
+            String program = "";
+            for (int i = 0; i < strings.getLength(); i++) { String value = strings.item(i).getTextContent(); if (value.startsWith("/")) { program = value; break; } }
+            record.put("kind", "launchd-system").put("name", LAUNCHD_LABEL).put("file", LAUNCHD_FILE.toString()).put("program", program)
+                    .put("start", "sudo launchctl bootstrap system " + LAUNCHD_FILE).put("stop", "sudo launchctl bootout system/" + LAUNCHD_LABEL);
         } else if (Model.WINDOWS) {
-            String script = "$target=" + Privileges.powershell(home.resolve("oieservice.exe").toString())
-                    + "; Get-CimInstance Win32_Service | Where-Object { $p=$_.PathName.Trim(); if($p.StartsWith('\"')){$p=$p.Split('\"')[1]}else{$p=($p -split '\\s+')[0]}; $p -ieq $target } | Select-Object -First 1 -ExpandProperty Name";
-            String name = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
-            if (!name.isEmpty()) return Json.object().put("kind", "install4j-windows").put("name", name);
-        } else if (Files.isDirectory(Path.of("/etc/systemd/system"))) {
-            // install4j writes /etc/systemd/system/<launcher>.service, which runs <engine>/oieservice.
-            Pattern exec = Pattern.compile("(?m)^\\s*Exec(Start|Stop)=\\s*[-@+!]*\"?" + Pattern.quote(home.resolve("oieservice").toString()) + "\"?(\\s|$)");
-            try (var units = Files.list(Path.of("/etc/systemd/system"))) {
-                for (Path unit : units.filter(p -> p.getFileName().toString().endsWith(".service") && !p.getFileName().toString().startsWith("org.openintegrationengine.engine.")).sorted().toList())
-                    if (Files.isRegularFile(unit, LinkOption.NOFOLLOW_LINKS) && exec.matcher(Files.readString(unit, java.nio.charset.StandardCharsets.ISO_8859_1)).find())
-                        return Json.object().put("kind", "install4j-systemd").put("name", unit.getFileName().toString()).put("file", unit.toString());
-            }
+            String script = "$s=Get-CimInstance Win32_Service -Filter \"Name='" + WINDOWS_NAME + "'\"; if($s){$p=$s.PathName.Trim(); if($p.StartsWith('\"')){$p.Split('\"')[1]}else{($p -split '\\s+')[0]}}";
+            String output = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+            String program = output.lines().map(String::strip).filter(line -> !line.isEmpty()).reduce((first, last) -> last).orElse("");
+            if (program.isEmpty()) return null;
+            if (program.startsWith("\\\\?\\")) program = program.substring(4);
+            record.put("kind", "windows").put("name", WINDOWS_NAME).put("program", program)
+                    .put("start", "sc.exe start \"" + WINDOWS_NAME + "\"").put("stop", "sc.exe stop \"" + WINDOWS_NAME + "\"");
+            Path xml = Path.of(program).resolveSibling("oie-service.xml"); if (Files.isRegularFile(xml)) record.put("file", xml.toString());
+        } else if (Files.isRegularFile(UNIT_FILE, LinkOption.NOFOLLOW_LINKS)) {
+            Matcher exec = Pattern.compile("(?m)^\\s*ExecStart=\\s*[-@+!]*(\"([^\"]+)\"|(\\S+))").matcher(Files.readString(UNIT_FILE, StandardCharsets.ISO_8859_1));
+            record.put("kind", "systemd-system").put("name", UNIT).put("file", UNIT_FILE.toString()).put("program", exec.find() ? Objects.requireNonNullElse(exec.group(2), exec.group(3)) : "")
+                    .put("start", "sudo systemctl start oieservice").put("stop", "sudo systemctl stop oieservice");
+        } else if (Files.exists(INITD_FILE, LinkOption.NOFOLLOW_LINKS)) {
+            record.put("kind", "initd").put("name", "oieservice").put("file", INITD_FILE.toString())
+                    .put("program", Files.isSymbolicLink(INITD_FILE) ? INITD_FILE.toRealPath().toString() : INITD_FILE.toString())
+                    .put("start", "sudo " + INITD_FILE + " start").put("stop", "sudo " + INITD_FILE + " stop");
+        } else return null;
+        return record;
+    }
+    static boolean belongs(Path home, ObjectNode record) {
+        if (record == null) return false;
+        String program = record.path("program").asText();
+        for (String name : List.of("oieservice", "oieserver", "oieservice.exe", "oie-service.exe")) {
+            String expected = home.resolve(name).toString();
+            if (Model.WINDOWS ? program.equalsIgnoreCase(expected) : program.equals(expected)) return true;
         }
-        return null;
+        return false;
+    }
+    /** The engine service that runs this engine folder, or null. */
+    static ObjectNode detect(Path home) throws Exception { ObjectNode record = find(); return belongs(home, record) ? record : null; }
+    /** install4j allows one engine service per computer. */
+    static String conflict(Path home) throws Exception {
+        ObjectNode record = find();
+        if (record == null || belongs(home, record)) return "";
+        return "The " + (Model.WINDOWS ? WINDOWS_NAME : record.path("name").asText()) + " already runs the engine in " + Path.of(record.path("program").asText()).getParent()
+                + ". Remove that service first, or start this engine as a normal process.";
+    }
+
+    static ObjectNode install(Path home, java.util.function.Consumer<ObjectNode> registered) throws Exception {
+        String reason = blocked(home); if (!reason.isEmpty()) throw new IOException(reason);
+        reason = conflict(home); if (!reason.isEmpty()) throw new IOException(reason);
+        if (!Privileges.administrator()) throw new IOException("Administrator privileges are required to install a system service.");
+        String service = home.resolve("oieservice").toString();
+        if (Model.MAC) {
+            Files.writeString(LAUNCHD_FILE, """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                    <key>Label</key>
+                    <string>%s</string>
+                    <key>ProgramArguments</key>
+                    <array>
+                        <string>%s</string>
+                         <string>start-launchd</string>
+                    </array>
+                    <key>KeepAlive</key>
+                    <false/>
+                    <key>RunAtLoad</key>
+                    <true/>
+                </dict>
+                </plist>
+                """.formatted(LAUNCHD_LABEL, xml(service)));
+            Model.command("chown", "root:wheel", LAUNCHD_FILE.toString()); Model.command("chmod", "644", LAUNCHD_FILE.toString());
+            registered.accept(find()); Model.command("launchctl", "bootstrap", "system", LAUNCHD_FILE.toString());
+        } else if (Model.WINDOWS) {
+            Path wrapper = home.resolve("oie-service.exe"), file = FilesSupport.safeTarget(home, "oie-service.xml");
+            if (!Files.isRegularFile(wrapper)) throw new IOException("The Windows service wrapper is missing.");
+            // install4j registers an automatic LocalSystem service with no description and no failure actions.
+            Files.writeString(file, """
+                <service><id>%s</id><name>%s</name><description></description>
+                <executable>%s</executable><workingdirectory>%s</workingdirectory><startmode>Automatic</startmode>
+                <stoptimeout>60 sec</stoptimeout><stopparentprocessfirst>true</stopparentprocessfirst>
+                <logpath>%s</logpath><log mode="roll"/>
+                </service>
+                """.formatted(WINDOWS_NAME, WINDOWS_NAME, xml(home.resolve("oieservice.exe").toString()), xml(home.toString()), xml(home.resolve("logs").toString())));
+            Model.command(wrapper.toString(), "install"); registered.accept(find()); Model.command(wrapper.toString(), "start");
+        } else if (supported().equals("systemd")) {
+            Files.writeString(UNIT_FILE, "[Unit]\nDescription=" + WINDOWS_NAME + "\nBefore=multi-user.target graphical.target\n"
+                    + "After=network-online.target remote-fs.target time-sync.target\nWants=network-online.target\n\n[Service]\nType=" + (systemdVersion() >= 240 ? "exec" : "simple")
+                    + "\nExecStart=\"" + service.replace("%", "%%") + "\" start-launchd\nSuccessExitStatus=0 143\nKillMode=process\n\n[Install]\nWantedBy=multi-user.target graphical.target\n");
+            Model.command("chmod", "644", UNIT_FILE.toString());
+            registered.accept(find()); Model.command("systemctl", "daemon-reload"); Model.command("systemctl", "enable", UNIT); Model.command("systemctl", "start", UNIT);
+        } else if (supported().equals("init.d")) {
+            Files.deleteIfExists(INITD_FILE); Files.createSymbolicLink(INITD_FILE, Path.of(service));
+            if (Files.isExecutable(Path.of("/usr/sbin/update-rc.d"))) Model.command("/usr/sbin/update-rc.d", "oieservice", "defaults");
+            else if (Files.isExecutable(Path.of("/sbin/chkconfig"))) Model.command("/sbin/chkconfig", "--add", "oieservice");
+            registered.accept(find()); NativeProcesses.start(home, home.resolve("oieserver"));
+        } else throw new IOException("This system has no supported service manager.");
+        return find();
+    }
+    private static int systemdVersion() {
+        try { Matcher m = Pattern.compile("systemd (\\d+)").matcher(Model.command("systemctl", "--version")); return m.find() ? Integer.parseInt(m.group(1)) : 0; }
+        catch (Exception e) { return 0; }
+    }
+
+    /** install4j leaves file ownership and permissions to the installing administrator; a normal process runs as the installing user. */
+    static void permissions(Path home, boolean service) throws Exception {
+        if (!Privileges.administrator() || Model.WINDOWS) return;
+        String owner = service ? "root" : Privileges.invokingUser();
+        Model.command("chown", "-R", owner, home.toString());
+    }
+    static void stop(Path home, boolean remove) throws Exception {
+        ObjectNode record = detect(home);
+        if (record == null) return;
+        String kind = record.path("kind").asText();
+        switch (kind) {
+            case "windows" -> {
+                String script = "$ErrorActionPreference='Stop'; $s=Get-Service -Name '" + WINDOWS_NAME + "' -ErrorAction SilentlyContinue; if($s){if($s.Status -ne 'Stopped'){ $s.Stop(); $s.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(65)) }}";
+                Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+                if (remove) Model.command("sc.exe", "delete", WINDOWS_NAME);
+            }
+            case "launchd-system" -> {
+                try { Model.command("launchctl", "bootout", "system/" + LAUNCHD_LABEL); }
+                catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
+            }
+            case "systemd-system" -> {
+                try { if (remove) Model.command("systemctl", "disable", "--now", UNIT); else Model.command("systemctl", "stop", UNIT); }
+                catch (IOException e) { if (!Model.engineProcesses(home).isEmpty()) throw e; }
+            }
+            default -> NativeProcesses.stopOwned(home);
+        }
+        if (remove) {
+            if (kind.equals("initd")) {
+                if (Files.isExecutable(Path.of("/usr/sbin/update-rc.d"))) Model.command("/usr/sbin/update-rc.d", "-f", "oieservice", "remove");
+                else if (Files.isExecutable(Path.of("/sbin/chkconfig"))) Model.command("/sbin/chkconfig", "--del", "oieservice");
+            }
+            if (record.hasNonNull("file")) Files.deleteIfExists(Path.of(record.path("file").asText()));
+            if (kind.equals("systemd-system")) Model.command("systemctl", "daemon-reload");
+        }
+    }
+    static void start(Path home) throws Exception {
+        ObjectNode record = detect(home);
+        if (record == null) throw new IOException("No engine service is installed for " + home);
+        switch (record.path("kind").asText()) {
+            case "windows" -> Model.command("sc.exe", "start", WINDOWS_NAME);
+            case "launchd-system" -> {
+                try { Model.command("launchctl", "print", "system/" + LAUNCHD_LABEL); Model.command("launchctl", "kickstart", "system/" + LAUNCHD_LABEL); }
+                catch (IOException notLoaded) { Model.command("launchctl", "bootstrap", "system", LAUNCHD_FILE.toString()); }
+            }
+            case "systemd-system" -> Model.command("systemctl", "start", UNIT);
+            default -> NativeProcesses.start(home, home.resolve("oieserver"));
+        }
+    }
+    static boolean running(Path home) throws Exception {
+        ObjectNode record = detect(home);
+        if (record == null) return false;
+        try {
+            return switch (record.path("kind").asText()) {
+                case "windows" -> Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded("(Get-Service -Name '" + WINDOWS_NAME + "' -ErrorAction SilentlyContinue).Status")).equalsIgnoreCase("Running");
+                case "launchd-system" -> Model.command("launchctl", "print", "system/" + LAUNCHD_LABEL).contains("state = running");
+                case "systemd-system" -> Model.command("systemctl", "is-active", UNIT).equals("active");
+                default -> !Model.engineProcesses(home).isEmpty();
+            };
+        } catch (IOException notRunning) { return false; }
     }
 }

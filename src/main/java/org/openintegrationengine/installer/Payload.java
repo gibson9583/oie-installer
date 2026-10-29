@@ -44,6 +44,8 @@ final class Payload {
     }
     String version() { return manifest.path("version").asText(); }
     boolean nativeEngine() { return manifest.path("format").asInt() == 2; }
+    /** The -with-JRE media bundle a Java runtime for the engine; the others use an installed Java 17 or later. */
+    boolean bundledJava() { return manifest.path("bundledJava").asBoolean(true); }
     Path engine() throws IOException { return safe("engine"); }
     Path engineJava(Path home) throws IOException { return FilesSupport.safeTarget(home, manifest.path("engineJava").asText()); }
     Path launcher(Path home, String role) throws IOException { return FilesSupport.safeTarget(home, manifest.path("engineLaunchers").path(role).asText()); }
