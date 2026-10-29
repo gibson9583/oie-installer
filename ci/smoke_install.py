@@ -223,7 +223,8 @@ def launcher(home: Path, name: str) -> Path:
 def smoke(service: bool, http: int, https: int) -> None:
     base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/Applications") if MAC else Path("/opt")
     home = base / f"oie-smoke-{'service' if service else 'process'}-{secrets.token_hex(3)}"
-    password = secrets.token_urlsafe(18)
+    # oiecommand's shipped parser can read a leading '-' as another option.
+    password = "OIE-" + secrets.token_urlsafe(18)
     java, app = installer()
     with tempfile.TemporaryDirectory() as work:
         plan = Path(work) / "plan.json"
