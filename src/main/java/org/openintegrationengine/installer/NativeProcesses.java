@@ -22,13 +22,8 @@ final class NativeProcesses {
         }
         List<String> command = new ArrayList<>();
         if (Privileges.administrator() && !Privileges.invokingUser().equals("root")) command.addAll(List.of("/usr/bin/sudo", "-n", "-u", Privileges.invokingUser(), "--"));
-        Path perl = Path.of("/usr/bin/perl");
-        if (Files.isExecutable(perl)) {
-            // The elevated helper can start with SIGTERM ignored. A JVM that starts with SIGTERM ignored never runs its
-            // shutdown hooks on SIGTERM, and a POSIX shell cannot restore an ignored signal. Restore the defaults, ignore SIGHUP.
-            command.addAll(List.of(perl.toString(), "-e", "$SIG{$_}='DEFAULT' for qw(TERM INT QUIT); $SIG{HUP}='IGNORE'; exec {$ARGV[0]} @ARGV or die \"exec $ARGV[0]: $!\\n\";", launcher.toString()));
-        } else if (Model.MAC) {
-            // macOS nohup aborts when its private launchd console-detach call fails in a GUI/elevated helper session.
+        if (Model.MAC) {
+            // macOS nohup aborts when its private launchd console-detach call fails in a GUI session.
             command.addAll(List.of("/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "oie-engine", launcher.toString()));
         } else command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
         ProcessBuilder builder = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))

@@ -293,11 +293,15 @@ The tests cover:
 
 Linux desktop checks verify the invoking user's UID, groups, environment and process cleanup without opening a browser.
 
+macOS startup checks use the real engine and an AppleScript helper with SIGTERM ignored. They check startup in the user session, installation locking, PID recording, password cleanup, graceful stop, caller loss and recovery of engines started with SIGTERM ignored. These checks do not display an administrator approval dialog.
+
 Desktop wizard interaction and external databases require separate validation.
 
 ## Implementation
 
 The wizard collects the installation plan and passes it to the installation backend. The backend uses an elevated helper when it needs administrator approval. Engine launchers start the selected Java runtime with the engine's VM options.
+
+On macOS, the helper asks the original user session to start a process-mode engine. The helper keeps the installation lock until startup verification and initial-password cleanup finish. Service-mode engines start through the system service manager.
 
 | Source | Responsibility |
 | --- | --- |
@@ -309,6 +313,7 @@ The wizard collects the installation plan and passes it to the installation back
 | [Model.java](src/main/java/org/openintegrationengine/installer/Model.java), [Payload.java](src/main/java/org/openintegrationengine/installer/Payload.java), [Archives.java](src/main/java/org/openintegrationengine/installer/Archives.java) | Engine detection, payload verification and extraction |
 | [Readiness.java](src/main/java/org/openintegrationengine/installer/Readiness.java) | Startup checks |
 | [Privileges.java](src/main/java/org/openintegrationengine/installer/Privileges.java) | Administrator approval and helper process |
+| [SessionStart.java](src/main/java/org/openintegrationengine/installer/SessionStart.java) | Process startup requests between the helper and user session |
 | [DesktopSession.java](src/main/java/org/openintegrationengine/installer/DesktopSession.java), [SystemAppearance.java](src/main/java/org/openintegrationengine/installer/SystemAppearance.java) | Desktop actions and system appearance |
 | [build.py](build.py) | Release downloads and package creation |
 | [windows_manifest.py](windows_manifest.py) | Windows launcher elevation and manifest verification |

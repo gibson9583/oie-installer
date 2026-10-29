@@ -27,8 +27,13 @@ final class Installer {
             Map.entry("java", "Set the Java runtime"), Map.entry("configure", "Write the engine settings"), Map.entry("plugins", "Install the selected add-ons"),
             Map.entry("start", "Start the engine"), Map.entry("ready", "Wait for the engine to start"), Map.entry("secure", "Remove the initial password"));
     private String active;
+    @FunctionalInterface interface ProcessStarter { long start(Path home, Payload payload) throws Exception; }
+    private final ProcessStarter processStarter;
     static String stepLabel(String id) { return LABELS.getOrDefault(id, id); }
-    Installer(Payload payload, Consumer<Event> events, Consumer<String> log) { this.payload = payload; this.events = events; this.log = log; }
+    Installer(Payload payload, Consumer<Event> events, Consumer<String> log) { this(payload, events, log, NativeProcesses::start); }
+    Installer(Payload payload, Consumer<Event> events, Consumer<String> log, ProcessStarter processStarter) {
+        this.payload = payload; this.events = events; this.log = log; this.processStarter = processStarter;
+    }
     private void event(String id, String state, String detail, double fraction) {
         double progress = (steps.indexOf(id) + fraction) / steps.size();
         events.accept(new Event(id, stepLabel(id), state, detail, Math.max(0, Math.min(1, progress))));
@@ -201,7 +206,7 @@ final class Installer {
                         try { writeTools(home, receipt); } catch (Exception e) { throw new RuntimeException("Cannot save the service receipt", e); }
                     })); alive = () -> true;
                 } else {
-                    receipt.putNull("service"); long pid = NativeProcesses.start(home, payload);
+                    receipt.putNull("service"); long pid = processStarter.start(home, payload);
                     receipt.put("pid", pid); alive = () -> ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false);
                 }
                 writeTools(home, receipt); done("start", plan.service() ? "Registered the " + Services.supported() + " service" : "Process " + receipt.path("pid").asLong());

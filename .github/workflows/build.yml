@@ -100,6 +100,14 @@ jobs:
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
+      - name: Test process startup in the user session
+        working-directory: installer
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            python ci/check_session_start.py --engine
+          else
+            python ci/check_session_start.py
+          fi
       - name: Test system appearance and completion links
         working-directory: installer
         run: |
@@ -144,6 +152,14 @@ jobs:
             installer/payload/manifest.json
             installer/payload/engine/oiecommand.exe
           if-no-files-found: ignore
+      - name: Preserve macOS session startup checks
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: session-start-${{ matrix.id }}
+          path: installer/target/session-start-check/**
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Preserve Windows service checks
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v7

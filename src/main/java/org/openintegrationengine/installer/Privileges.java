@@ -24,6 +24,7 @@ final class Privileges {
     static String invokingUid() throws Exception { return System.getProperty("oie.invoking.uid", Model.WINDOWS ? "" : Model.command("id", "-u")); }
     static Map<String, Object> install(Payload payload, Model.Plan plan, Consumer<Installer.Event> events, Consumer<String> log) throws Exception {
         if (!available() || administrator()) return new Installer(payload, events, log).run(plan);
+        Path expectedHome = Model.MAC ? Model.canonical(plan.home()) : plan.home();
         Path jobs = Model.userHome().resolve(".cache/oie-installer/jobs"); Files.createDirectories(jobs);
         Path job = Files.createTempDirectory(jobs, "install-");
         Process elevation = null;
@@ -34,11 +35,15 @@ final class Privileges {
             input.put("installDir", plan.home().toString()).put("javaCmd", plan.javaCmd()).put("httpPort", plan.httpPort()).put("httpsPort", plan.httpsPort())
                     .put("database", plan.database()).put("databaseUrl", plan.databaseUrl()).put("databaseUsername", plan.databaseUsername()).put("databasePassword", plan.databasePassword())
                     .put("adminPassword", plan.adminPassword()).put("service", plan.service()).put("expectedMode", plan.expectedMode()).put("expectedVersion", plan.expectedVersion());
+            if (Model.MAC) {
+                var caller = SessionStart.Caller.current();
+                input.put("callerPid", caller.pid()).put("callerStarted", caller.started());
+            }
             input.set("plugins", Json.MAPPER.valueToTree(plan.plugins()));
             input.put("invokingHome", Model.userHome().toString()).put("invokingUser", invokingUser());
             if (!Model.WINDOWS) input.put("invokingUid", Model.command("id", "-u"));
             Json.write(job.resolve("plan.json"), input);
-            for (String file : List.of("events.jsonl", "outcome.json", "helper.log")) { Files.createFile(job.resolve(file)); Json.privateFile(job.resolve(file)); }
+            for (String file : List.of("events.jsonl", "outcome.json", "helper.log", "start-result.json")) { Files.createFile(job.resolve(file)); Json.privateFile(job.resolve(file)); }
             Path code = Path.of(Main.class.getProtectionDomain().getCodeSource().getLocation().toURI());
             // The wildcard is Java classpath syntax, not a Windows filesystem name.
             String classpath = code + File.pathSeparator + code.resolveSibling("lib") + File.separator + "*";
@@ -56,9 +61,9 @@ final class Privileges {
             }
             int consumed = 0;
             while (elevation.isAlive()) {
-                consumed = readEvents(job, consumed, events, log); Thread.sleep(200);
+                consumed = readEvents(job, consumed, events, log, payload, expectedHome, plan.service(), elevation); Thread.sleep(200);
             }
-            readEvents(job, consumed, events, log);
+            readEvents(job, consumed, events, log, payload, expectedHome, plan.service(), elevation);
             if (Files.size(job.resolve("outcome.json")) == 0) {
                 String detail = new String(elevation.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
                 throw new IOException("Administrator approval was cancelled or the installer helper could not start." + (detail.isBlank() ? "" : " " + detail));
@@ -72,29 +77,38 @@ final class Privileges {
             else log.accept("The installer helper is still running; its private job was retained at " + job);
         }
     }
-    private static int readEvents(Path job, int consumed, Consumer<Installer.Event> events, Consumer<String> log) throws Exception {
+    private static int readEvents(Path job, int consumed, Consumer<Installer.Event> events, Consumer<String> log,
+                                  Payload payload, Path expectedHome, boolean service, Process elevation) throws Exception {
         List<String> lines = new String(Files.readAllBytes(job.resolve("events.jsonl")), StandardCharsets.UTF_8).lines().toList();
         for (; consumed < lines.size(); consumed++) {
             JsonNode item;
             try { item = Json.MAPPER.readTree(lines.get(consumed)); } catch (IOException incomplete) { break; }
-            if (item.has("log")) log.accept(item.path("log").asText());
+            if (item.has("sessionStart")) {
+                if (!Model.MAC || service || !elevation.isAlive()) throw new IOException("The installation helper cannot request an engine start in this session.");
+                SessionStart.respond(job, Path.of(item.path("sessionStart").asText()), expectedHome, payload, NativeProcesses::start);
+            } else if (item.has("log")) log.accept(item.path("log").asText());
             else events.accept(Json.MAPPER.treeToValue(item, Installer.Event.class));
         }
         return consumed;
     }
     static void helper(Path job) throws Exception {
         if (!administrator()) throw new IOException("The installation helper requires administrator privileges.");
-        for (String file : List.of("plan.json", "events.jsonl", "outcome.json")) FilesSupport.safeTarget(job, file);
+        for (String file : List.of("plan.json", "events.jsonl", "outcome.json", "start-result.json")) FilesSupport.safeTarget(job, file);
         JsonNode input = Json.read(job.resolve("plan.json"));
         System.setProperty("oie.invoking.home", input.path("invokingHome").asText());
         System.setProperty("oie.invoking.user", input.path("invokingUser").asText());
         System.setProperty("oie.invoking.uid", input.path("invokingUid").asText());
         ObjectNode outcome = Json.object();
+        SessionStart.Caller caller = Model.MAC ? new SessionStart.Caller(input.path("callerPid").asLong(), input.path("callerStarted").asLong(-1)) : null;
         try {
-            var installer = new Installer(Payload.load(), event -> append(job, Json.MAPPER.valueToTree(event)), line -> append(job, Json.object().put("log", line)));
+            Installer.ProcessStarter starter = caller != null && !input.path("service").asBoolean()
+                    ? (home, payload) -> SessionStart.await(job, home, caller, item -> append(job, item), java.time.Duration.ofMinutes(5))
+                    : NativeProcesses::start;
+            var installer = new Installer(Payload.load(), event -> append(job, Json.MAPPER.valueToTree(event)), line -> append(job, Json.object().put("log", line)), starter);
             outcome.put("ok", true).set("result", Json.MAPPER.valueToTree(installer.run(Model.Plan.from(input))));
         } catch (Exception e) { outcome.put("ok", false).put("error", e.getMessage() == null ? e.toString() : e.getMessage()); }
-        Files.writeString(job.resolve("outcome.json"), Json.MAPPER.writeValueAsString(outcome), StandardOpenOption.TRUNCATE_EXISTING);
+        try { Files.writeString(job.resolve("outcome.json"), Json.MAPPER.writeValueAsString(outcome), StandardOpenOption.TRUNCATE_EXISTING); }
+        finally { if (caller != null && !caller.alive()) FilesSupport.deleteTree(job); }
     }
     private static void append(Path job, JsonNode item) {
         try { Files.writeString(job.resolve("events.jsonl"), Json.MAPPER.writeValueAsString(item) + "\n", StandardOpenOption.APPEND); }
