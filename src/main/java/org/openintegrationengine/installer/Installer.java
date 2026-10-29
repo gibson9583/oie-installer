@@ -3,6 +3,8 @@ package org.openintegrationengine.installer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.*;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.channels.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -230,10 +232,59 @@ final class Installer {
                         .filter(id -> !layout.extensions().contains(id) && !plan.plugins().getOrDefault(id, false)).sorted().toList());
             }
         }
-        if (plan.plugins().get("websupport")) result.put("webClientUrl", base + "/oie-webadmin/");
+        try {
+            String webClientUrl = webClientUrl(home, base);
+            if (webClientUrl != null) result.put("webClientUrl", webClientUrl);
+            else if (Files.isRegularFile(home.resolve("webapps/oie-webadmin.war")))
+                log.accept("Could not determine the configured OIE Web Client address; using the engine address.");
+        } catch (IOException | IllegalArgumentException e) {
+            // Optional completion metadata must not turn a running installation into a failed one.
+            log.accept("Could not determine the OIE Web Client address; using the engine address. " + e.getMessage());
+        }
         if (!upgrade) result.put("adminPassword", plan.adminPassword());
         else { result.put("from", existing.version()); result.put("backup", backup.toString()); result.put("changedConf", changed); }
         return result;
+    }
+    /** Jetty serves the deployed WAR, including one retained from an earlier installation. */
+    static String webClientUrl(Path home, String base) throws IOException {
+        if (!Files.isRegularFile(home.resolve("webapps/oie-webadmin.war"))) return null;
+        String context = literalWebContext(home.resolve("conf/mirth.properties"));
+        // Runtime interpolation can differ in the engine's JVM or service account. Keep the engine address instead of guessing.
+        if (context == null || context.contains("${")) return null;
+        // Match MirthWebServer's normalization: add a leading slash and remove one trailing slash.
+        if (!context.startsWith("/")) context = "/" + context;
+        if (context.endsWith("/")) context = context.substring(0, context.length() - 1);
+        try {
+            // Context paths are decoded paths. Quote literal %, ?, # and Unicode; Jetty also quotes path parameters.
+            return base + new URI(null, null, context + "/oie-webadmin/", null, null).toASCIIString().replace(";", "%3B");
+        } catch (URISyntaxException e) { throw new IOException("Cannot form the OIE Web Client address.", e); }
+    }
+    /** Read one literal setting using the shipped engine's physical-line trimming and first-value rules. */
+    private static String literalWebContext(Path properties) throws IOException {
+        if (!Files.exists(properties)) return "";
+        StringBuilder logical = new StringBuilder();
+        for (String physical : Files.readAllLines(properties, StandardCharsets.ISO_8859_1)) {
+            String line = physical.trim();
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith("!")) continue;
+            int backslashes = 0;
+            for (int end = line.length(); end > 0 && line.charAt(end - 1) == '\\'; end--) backslashes++;
+            boolean continued = backslashes % 2 != 0;
+            logical.append(continued ? line.substring(0, line.length() - 1) : line);
+            if (continued) continue;
+            // Decode standard escapes after physical whitespace was trimmed. This is a literal-setting reader, not a full engine parser.
+            Properties entry = new Properties(); entry.load(new StringReader(logical.toString()));
+            if (entry.stringPropertyNames().stream().anyMatch(key -> key.equalsIgnoreCase("include") || key.equalsIgnoreCase("includeoptional"))) return null;
+            if (entry.containsKey("http.contextpath")) {
+                // Commons preserves unknown value escapes that Properties drops; decline rather than guess those paths.
+                for (int i = 0; i < logical.length(); i++) if (logical.charAt(i) == '\\') {
+                    if (++i == logical.length() || "trnfu\\\"':=#!".indexOf(logical.charAt(i)) < 0) return null;
+                }
+                return entry.getProperty("http.contextpath");
+            }
+            logical.setLength(0);
+        }
+        // The engine ignores an unfinished continuation at EOF.
+        return "";
     }
     /**
      * install4j's rollback: remove the new program files and registrations, keep the user's settings and data.

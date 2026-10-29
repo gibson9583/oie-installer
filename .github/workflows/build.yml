@@ -100,6 +100,11 @@ jobs:
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
+      - name: Test system appearance and completion links
+        working-directory: installer
+        run: |
+          python ci/check_system_appearance.py
+          python ci/check_completion_links.py
       - name: Test Windows service operations
         if: runner.os == 'Windows'
         working-directory: installer

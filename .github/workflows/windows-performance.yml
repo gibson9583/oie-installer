@@ -1,6 +1,11 @@
 name: Profile Windows operations
 on:
   workflow_dispatch:
+    inputs:
+      skip_profile:
+        description: Run native checks without the timing benchmarks
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -30,7 +35,13 @@ jobs:
       - name: Check Windows service operations
         shell: bash
         run: python -u ci/check_windows_services.py
+      - name: Check system appearance and completion links
+        shell: bash
+        run: |
+          python ci/check_system_appearance.py
+          python ci/check_completion_links.py
       - name: Profile Windows operations
+        if: ${{ !inputs.skip_profile }}
         shell: bash
         run: python -u ci/profile_windows.py
       - name: Preserve timings

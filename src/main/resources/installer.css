@@ -25,7 +25,7 @@
 }
 .app.light {
     -oie-bg: #e9edf2;
-    -oie-panel: #fbfcfe;
+    -oie-panel: #ffffff;
     -oie-input: #f3f6f9;
     -oie-hover: #e1e9f1;
     -oie-line: #cdd7e0;
@@ -119,7 +119,7 @@
 .separator .line { -fx-border-color: -oie-line; -fx-border-width: 1 0 0 0; }
 .sidebar .separator .line { -fx-border-color: #233140; }
 .mono, .log-text { -fx-font-family: "JetBrains Mono"; -fx-font-size: 10.5px; }
-.address { -fx-font-family: "JetBrains Mono"; -fx-font-size: 15px; -fx-text-fill: -oie-accent; }
+.address { -fx-font-family: "JetBrains Mono"; -fx-font-size: 13px; -fx-text-fill: -oie-accent; }
 .progress-bar { -fx-accent: -oie-accent; }
 .progress-bar .track { -fx-background-color: -oie-hover; -fx-background-radius: 8; }
 .progress-bar .bar { -fx-background-color: -oie-accent; -fx-background-radius: 8; -fx-padding: 4; -fx-background-insets: 0; }
@@ -161,3 +161,24 @@
 .step-label:disabled { -fx-opacity: 1; -fx-text-fill: #8192a7; }
 .step-number:disabled { -fx-opacity: 1; }
 .active-step .step-label:disabled { -fx-text-fill: #ffffff; }
+
+/* Web Client default light palette. The blue chrome is slightly darkened at
+   its brightest stop so small white navigation text keeps 4.5:1 contrast. */
+.app.light .sidebar { -fx-background-color: linear-gradient(to bottom, #3477b8 0%, #2d639b 60%, #285887 100%); -fx-border-color: transparent rgba(255,255,255,0.22) transparent transparent; }
+.app.light .brand-block { -fx-border-color: transparent transparent rgba(255,255,255,0.22) transparent; }
+.app.light .brand-caption { -fx-text-fill: #ffffff; }
+.app.light .button.step:hover { -fx-background-color: rgba(0,0,0,0.12); }
+.app.light .button.step:focused { -fx-border-color: #ffffff; }
+.app.light .button.step.active-step, .app.light .button.step.active-step:disabled { -fx-background-color: rgba(0,0,0,0.16); -fx-border-color: transparent transparent transparent #ffffff; }
+.app.light .step-label, .app.light .step-label:disabled, .app.light .step-number { -fx-text-fill: #ffffff; }
+.app.light .step-badge { -fx-border-color: #ffffff; }
+.app.light .active-step .step-badge { -fx-background-color: transparent; }
+.app.light .step-badge.completed-badge { -fx-background-color: #ffffff; -fx-border-color: #ffffff; }
+.app.light .completed-badge .icon-path { -fx-stroke: #2e6da4; }
+.app.light .sidebar .separator .line { -fx-border-color: rgba(255,255,255,0.28); }
+.app.light .topbar { -fx-background-color: #3477b8; -fx-border-color: transparent transparent rgba(255,255,255,0.22) transparent; }
+.app.light .view-title, .app.light .host { -fx-text-fill: #ffffff; }
+.app.light .host-chip { -fx-background-color: rgba(0,0,0,0.12); -fx-border-color: rgba(255,255,255,0.5); }
+.app.light .topbar .icon-path { -fx-stroke: #ffffff; }
+.app.light .topbar .button:hover { -fx-background-color: rgba(0,0,0,0.12); }
+.app.light .topbar .button:focused { -fx-border-color: #ffffff; }

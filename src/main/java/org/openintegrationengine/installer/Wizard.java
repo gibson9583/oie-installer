@@ -18,7 +18,6 @@ import java.awt.Desktop;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.prefs.Preferences;
 
 /** Native JavaFX controls; no embedded browser, JavaScript bridge or localhost UI server. */
 public final class Wizard extends Application {
@@ -31,7 +30,6 @@ public final class Wizard extends Application {
     private final Map<String, String> form = new HashMap<>();
     private final Map<String, Boolean> plugins = new LinkedHashMap<>();
     private final Set<String> visited = new HashSet<>();
-    private final Preferences preferences = Preferences.userNodeForPackage(Wizard.class);
     private final BorderPane root = new BorderPane();
     private final VBox rail = new VBox(2), page = new VBox(18);
     private final Label title = new Label(), globalError = new Label();
@@ -55,7 +53,8 @@ public final class Wizard extends Application {
     private Stage stage;
     private ImageView heroLogo;
     private ScrollPane scroll;
-    private Button themeButton;
+    private SystemAppearance appearance;
+    private boolean appearanceReady;
     private Map<String, Object> result;
 
     @Override public void start(Stage stage) {
@@ -66,10 +65,14 @@ public final class Wizard extends Application {
         this.stage = stage; stage.setTitle("Open Integration Engine Installer");
         stage.setMinWidth(960); stage.setMinHeight(640);
         stage.getIcons().add(new Image(Objects.requireNonNull(getClass().getResourceAsStream("/assets/oie.png"))));
-        root.getStyleClass().add("app"); light = preferences.getBoolean("light", false); applyTheme();
+        root.getStyleClass().add("app");
         Scene scene = new Scene(root, 1120, 760); scene.getStylesheets().add(Objects.requireNonNull(getClass().getResource("/installer.css")).toExternalForm());
-        root.setCenter(new StackPane(label("Reading bundled release…", "muted"))); stage.setScene(scene); stage.show();
+        root.setCenter(new StackPane(label("Reading bundled release…", "muted"))); stage.setScene(scene);
         stage.setOnCloseRequest(e -> { if (running) { e.consume(); globalError.setText("Keep this window open while the engine is being installed."); } });
+        appearance = SystemAppearance.follow(value -> {
+            light = value; applyTheme();
+            if (!appearanceReady) { appearanceReady = true; stage.show(); }
+        });
         worker.submit(() -> {
             try {
                 Payload loaded = Payload.load(); List<Model.JavaRuntime> java = Model.runtimes();
@@ -93,16 +96,14 @@ public final class Wizard extends Application {
         sidebar.getChildren().addAll(brandBlock, rail); root.setLeft(sidebar);
         BorderPane body = new BorderPane(); HBox topbar = new HBox(12); topbar.getStyleClass().add("topbar");
         Region space = new Region(); HBox.setHgrow(space, Priority.ALWAYS); title.getStyleClass().add("view-title");
-        themeButton = new Button(); themeButton.getStyleClass().addAll("quiet", "icon-button"); themeButton.setAccessibleText("Switch color theme");
-        themeButton.setTooltip(new Tooltip("Switch theme")); themeButton.setGraphic(Ui.icon(light ? "sun" : "moon", 16));
-        themeButton.setOnAction(e -> { light = !light; preferences.putBoolean("light", light); applyTheme(); });
         Region pip = new Region(); pip.getStyleClass().add("host-pip");
         HBox host = new HBox(7, pip, label((Model.MAC ? "macos" : System.getProperty("os.name").toLowerCase()) + " " + System.getProperty("os.arch"), "host")); host.getStyleClass().add("host-chip"); host.setAlignment(Pos.CENTER);
-        topbar.getChildren().addAll(title, space, host, themeButton);
+        topbar.getChildren().addAll(title, space, host);
         body.setTop(topbar);
         page.getStyleClass().add("page"); page.setFillWidth(true);
         page.getChildren().addListener((javafx.collections.ListChangeListener<Node>) change -> {
-            while (change.next()) for (Node child : change.getAddedSubList()) if (child instanceof Region region) region.setMaxWidth(720);
+            while (change.next()) for (Node child : change.getAddedSubList()) if (child instanceof Region region)
+                region.setMaxWidth(current.equals("license") ? Double.MAX_VALUE : 720);
         });
         scroll = new ScrollPane(page); scroll.setFitToWidth(true); scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER); scroll.getStyleClass().add("page-scroll");
         body.setCenter(scroll); root.setCenter(body);
@@ -118,7 +119,6 @@ public final class Wizard extends Application {
     private void applyTheme() {
         if (light) { if (!root.getStyleClass().contains("light")) root.getStyleClass().add("light"); } else root.getStyleClass().remove("light");
         if (heroLogo != null) heroLogo.setImage(brandAsset(!light));
-        if (themeButton != null) themeButton.setGraphic(Ui.icon(light ? "sun" : "moon", 16));
     }
     private Image brandAsset(boolean white) { return new Image(Objects.requireNonNull(getClass().getResourceAsStream("/assets/brand-" + (white ? "white" : "dark") + ".png"))); }
     private ImageView brandImage(boolean white, double width) { ImageView view = new ImageView(brandAsset(white)); view.setFitWidth(width); view.setPreserveRatio(true); return view; }
@@ -148,6 +148,7 @@ public final class Wizard extends Application {
     private void show(String id) {
         boolean backwards = steps().indexOf(id) < steps().indexOf(current);
         current = id; visited.add(id); page.getChildren().clear(); globalError.setText("");
+        if (scroll != null) scroll.setFitToHeight(id.equals("license"));
         footer.setVisible(!id.equals("install") && !id.equals("done")); footer.setManaged(footer.isVisible());
         title.setText(id.equals("review") ? "Review and " + verb().toLowerCase() : id.equals("plugins") ? "Choose add-ons" : NAMES.get(id));
         switch (id) {
@@ -238,7 +239,8 @@ public final class Wizard extends Application {
         try (var input = getClass().getResourceAsStream("/LICENSE.txt")) {
             if (input == null) throw new java.io.IOException("The bundled license is missing.");
             TextArea text = new TextArea(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
-            text.setEditable(false); text.setWrapText(true); text.setMinHeight(180); text.setPrefHeight(280); text.setMaxHeight(360);
+            text.setEditable(false); text.setWrapText(true); text.setMinHeight(180); text.setMaxHeight(Double.MAX_VALUE);
+            VBox.setVgrow(text, Priority.ALWAYS);
             text.getStyleClass().add("license-text"); text.setAccessibleText("Mozilla Public License 2.0 license terms");
             CheckBox accept = new CheckBox("I accept the terms of the Mozilla Public License 2.0.");
             accept.setWrapText(true); accept.setSelected(licenseAccepted);
@@ -506,16 +508,12 @@ public final class Wizard extends Application {
         page.getChildren().add(hero);
         GridPane cards = new GridPane(); cards.setHgap(12); cards.setVgap(12);
         for (int i = 0; i < 2; i++) { ColumnConstraints column = new ColumnConstraints(); column.setPercentWidth(50); column.setFillWidth(true); cards.getColumnConstraints().add(column); }
-        Button open = button("Open", () -> getHostServices().showDocument(String.valueOf(result.get("url")))); open.getStyleClass().addAll("primary", "small");
+        String addressUrl = String.valueOf(result.getOrDefault("webClientUrl", result.get("url")));
+        Button open = button("Open", () -> getHostServices().showDocument(addressUrl)); open.getStyleClass().addAll("primary", "small");
         HBox openActions = new HBox(7, open); openActions.setAlignment(Pos.CENTER_LEFT);
-        VBox address = panel(label("Address", "section-title"), message(String.valueOf(result.get("url")), "address"),
+        VBox address = panel(label("Address", "section-title"), message(addressUrl, "address"),
                 message(completedMode.equals("new") ? "The engine uses a new self-signed certificate." : "The engine keeps its certificate.", "muted"), openActions);
         address.setMinWidth(0); cards.add(address, 0, 0);
-        if (result.containsKey("webClientUrl")) {
-            Button web = button("Open OIE Web Client", () -> getHostServices().showDocument(String.valueOf(result.get("webClientUrl")))); web.getStyleClass().add("small");
-            // Keep the two actions readable in the narrower two-column cards.
-            address.getChildren().add(web);
-        }
         if (result.containsKey("adminPassword")) {
             String password = String.valueOf(result.get("adminPassword")); Label secret = label("••••••••••••••••••••••••", "mono");
             secret.getStyleClass().add("secret-value"); secret.setMinWidth(0); secret.setMaxWidth(Double.MAX_VALUE); HBox.setHgrow(secret, Priority.ALWAYS);
@@ -557,7 +555,8 @@ public final class Wizard extends Application {
                     commandRow("Start", "& " + Privileges.powershell(engine.resolve("oieserver.exe").toString())));
             else {
                 String command = FilesSupport.quote(engine.resolve("oieservice").toString());
-                details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid") + ".", "muted"),
+                details = panel(label("Process", "section-title"), message("The engine runs as process " + result.get("pid")
+                                + ". Use oieservice below to start or stop it. No system service is installed.", "muted"),
                         commandRow("Start", command + " start"), commandRow("Stop", command + " stop"));
             }
         }
@@ -580,5 +579,5 @@ public final class Wizard extends Application {
     }
     private void copy(String text) { ClipboardContent content = new ClipboardContent(); content.putString(text); Clipboard.getSystemClipboard().setContent(content); }
     private void openFolder(String path) { try { Desktop.getDesktop().open(Path.of(path).toFile()); } catch (Exception e) { new Alert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK).show(); } }
-    @Override public void stop() { worker.shutdown(); checks.shutdownNow(); }
+    @Override public void stop() { if (appearance != null) appearance.close(); worker.shutdown(); checks.shutdownNow(); }
 }
