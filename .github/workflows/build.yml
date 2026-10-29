@@ -121,7 +121,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $query = 'https://api.bell-sw.com/v1/liberica/releases?version-feature=21&version-modifier=latest&os=windows&arch=arm&bitness=64&bundle-type=jdk-full&package-type=zip'
-          $release = @(Invoke-RestMethod $query -UserAgent 'oie-installer-build')[0]
+          # PowerShell 7 returns a JSON array as one object; enumerate it and take the newest release.
+          $release = Invoke-RestMethod $query -UserAgent 'oie-installer-build' | ForEach-Object { $_ } | Select-Object -First 1
           if (-not $release) { throw 'BellSoft lists no Liberica Full JDK 21 for Windows ARM64' }
           Write-Host "$($release.filename)"
           # The download is a GitHub release asset; check GitHub's SHA-256 digest as well as BellSoft's SHA-1.
