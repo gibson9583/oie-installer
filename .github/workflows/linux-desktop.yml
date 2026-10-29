@@ -1,0 +1,41 @@
+name: Check Linux desktop integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x64, runner: ubuntu-24.04 }
+          - { name: Linux ARM64, runner: ubuntu-24.04-arm }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Compile installer classes
+        run: ./mvnw -B -Dmaven.test.skip=true package
+      - name: Check system appearance and desktop session
+        run: |
+          python ci/check_system_appearance.py 2>&1 | tee target/system-appearance-check.log
+          python ci/check_desktop_session.py 2>&1 | tee target/desktop-session-check.log
+      - name: Preserve native checks
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-checks-${{ runner.arch }}
+          path: target/*-check.log
+          if-no-files-found: ignore

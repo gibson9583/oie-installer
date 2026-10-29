@@ -305,8 +305,9 @@ public final class Wizard extends Application {
                 message("The installer backs up conf/ and appdata/, replaces program files and keeps your configuration, database, logs, custom libraries and other extensions.", "muted")));
     }
     private void java() {
-        heading("Which Java runtime runs the engine?", payload.bundledJava() ? "The engine includes its own Java 21 runtime. Use it, or choose an installed Java 17 or later."
-                : "This installer does not include Java. Choose an installed Java 17 or later, or use the -with-JRE installer.");
+        heading("Which Java runtime runs the engine?", payload.bundledJava() ? "The engine includes Java 21. Use it, or choose an installed Java 17 or later."
+                : "Choose an installed Java 17 or later, or use the -with-JRE installer.");
+        page.getChildren().add(message("The installer includes its own JavaFX runtime. The engine does not require JavaFX.", "muted"));
         ToggleGroup group = new ToggleGroup(); VBox choices = new VBox(10); Map<String, RadioButton> known = new LinkedHashMap<>();
         TextField path = input("javaCmd"); path.setPromptText("/path/to/jdk/bin/java");
         javaStatus = message("", "muted"); VBox custom = panel(field("Path to Java", path, "Enter the path to its java executable."), javaStatus);
@@ -389,13 +390,20 @@ public final class Wizard extends Application {
         Ui.Switch choice = new Ui.Switch("Run the engine as a service", service); choice.setDisable(Services.supported().isEmpty());
         Label explanation = message(service ? serviceReason().isEmpty() ? "Administrator approval is requested when you install." : serviceReason()
                 : "The installer starts the engine as a normal process. The engine stops when you restart the computer.", "muted");
-        String registration = Model.MAC ? "Starts at boot as root, using the com.oie.oieservice launch daemon." : Model.WINDOWS ? "Starts automatically as the " + Services.WINDOWS_NAME + ", under the Local System account."
-                : Services.supported().equals("systemd") ? "Starts at boot as root, using the oieservice systemd service." : "Starts at boot as root, using the /etc/init.d/oieservice script.";
-        HBox row = switchRow(choice, "Run the engine as a service", registration, "");
+        HBox row = switchRow(choice, "Run the engine as a service", serviceDescription(Services.supported()), "");
         choice.setOnAction(e -> { service = choice.isSelected(); explanation.setText(service ? serviceReason().isEmpty() ? "Administrator approval is requested when you install." : serviceReason() : "The installer starts the engine as a normal process. The engine stops when you restart the computer."); updateNext(); });
         page.getChildren().add(panel(row, explanation));
         if (!mode.equals("new") && destination.existing().service() != null && !destination.existing().service().isNull())
             page.getChildren().add(message("This engine already has a service. Turn the option off to remove it and start the engine as a normal process.", "callout"));
+    }
+    private static String serviceDescription(String manager) {
+        return switch (manager) {
+            case "systemd" -> "Starts at boot as root. Managed by systemd with systemctl (oieservice.service).";
+            case "init.d" -> "Starts at boot as root. Managed by init.d using /etc/init.d/oieservice.";
+            case "launchd" -> "Starts at boot as root, using the com.oie.oieservice launch daemon.";
+            case "Windows" -> "Starts automatically as the " + Services.WINDOWS_NAME + ", under the Local System account.";
+            default -> "This system has no supported service manager.";
+        };
     }
     private void plugins() {
         heading("Which add-ons would you like?", "All three are bundled with this installer. Choose the ones to install.");
@@ -509,7 +517,7 @@ public final class Wizard extends Application {
         GridPane cards = new GridPane(); cards.setHgap(12); cards.setVgap(12);
         for (int i = 0; i < 2; i++) { ColumnConstraints column = new ColumnConstraints(); column.setPercentWidth(50); column.setFillWidth(true); cards.getColumnConstraints().add(column); }
         String addressUrl = String.valueOf(result.getOrDefault("webClientUrl", result.get("url")));
-        Button open = button("Open", () -> getHostServices().showDocument(addressUrl)); open.getStyleClass().addAll("primary", "small");
+        Button open = button("Open", () -> openDocument(addressUrl)); open.getStyleClass().addAll("primary", "small");
         HBox openActions = new HBox(7, open); openActions.setAlignment(Pos.CENTER_LEFT);
         VBox address = panel(label("Address", "section-title"), message(addressUrl, "address"),
                 message(completedMode.equals("new") ? "The engine uses a new self-signed certificate." : "The engine keeps its certificate.", "muted"), openActions);
@@ -547,7 +555,8 @@ public final class Wizard extends Application {
     private VBox serviceDetails() {
         var serviceNode = Json.MAPPER.valueToTree(result.get("service"));
         VBox details;
-        if (serviceNode != null && !serviceNode.isNull()) details = panel(label("Service · " + serviceNode.path("kind").asText(), "section-title"),
+        if (serviceNode != null && !serviceNode.isNull()) details = panel(label("Service · " + serviceManager(serviceNode.path("kind").asText()), "section-title"),
+                message("Service ID: " + serviceNode.path("name").asText(), "muted"),
                 commandRow("Start", serviceNode.path("start").asText()), commandRow("Stop", serviceNode.path("stop").asText()));
         else {
             Path engine = Path.of(String.valueOf(result.get("home")));
@@ -561,6 +570,15 @@ public final class Wizard extends Application {
             }
         }
         details.getChildren().add(commandRow("Remove", String.valueOf(result.get("uninstall")))); details.setSpacing(9); return details;
+    }
+    private static String serviceManager(String kind) {
+        return switch (kind) {
+            case "systemd-system" -> "systemd";
+            case "initd" -> "init.d";
+            case "launchd-system" -> "launchd";
+            case "windows" -> "Windows Service Manager";
+            default -> kind;
+        };
     }
     private TextField commandValue(String value) {
         TextField text = new TextField(value); text.setEditable(false); text.getStyleClass().add("command-value"); text.setMinWidth(0); HBox.setHgrow(text, Priority.ALWAYS); return text;
@@ -578,6 +596,24 @@ public final class Wizard extends Application {
         HBox row = new HBox(8, commandValue(path), show); row.setAlignment(Pos.CENTER_LEFT); return row;
     }
     private void copy(String text) { ClipboardContent content = new ClipboardContent(); content.putString(text); Clipboard.getSystemClipboard().setContent(content); }
-    private void openFolder(String path) { try { Desktop.getDesktop().open(Path.of(path).toFile()); } catch (Exception e) { new Alert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK).show(); } }
+    private void openDocument(String url) {
+        if (!Model.MAC && !Model.WINDOWS) openLinuxDesktop(url);
+        else getHostServices().showDocument(url);
+    }
+    private void openLinuxDesktop(String target) {
+        checks.submit(() -> {
+            try { DesktopSession.open(target); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            catch (Exception e) {
+                if (!Thread.currentThread().isInterrupted()) Platform.runLater(() -> {
+                    if (stage.isShowing()) new Alert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK).show();
+                });
+            }
+        });
+    }
+    private void openFolder(String path) {
+        if (!Model.MAC && !Model.WINDOWS) openLinuxDesktop(Path.of(path).toUri().toString());
+        else try { Desktop.getDesktop().open(Path.of(path).toFile()); } catch (Exception e) { new Alert(Alert.AlertType.ERROR, e.getMessage(), ButtonType.OK).show(); }
+    }
     @Override public void stop() { if (appearance != null) appearance.close(); worker.shutdown(); checks.shutdownNow(); }
 }

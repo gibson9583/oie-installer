@@ -33,7 +33,7 @@ macOS packages use ad hoc signing. Windows packages are unsigned.
 1. Start the package for your operating system:
    - Windows: run the `.exe`.
    - macOS: open the `.dmg`, then open **Open Integration Engine Installer**.
-   - Linux: run `sudo sh oie_unix_<version>.sh` from a desktop session.
+   - Linux: make the `.sh` file executable and run it from a desktop session. It requests administrator access if needed.
 2. Read the license and select **I accept**.
 3. Select the engine folder.
 4. Select the Java runtime for the engine.
@@ -43,6 +43,8 @@ macOS packages use ad hoc signing. Windows packages are unsigned.
 8. Select the add-ons.
 9. Check the settings on the review screen and select **Install**.
 10. Approve the request for administrator access when prompted.
+
+On Linux, browser and folder actions use the desktop session of the user who started the installer. These actions require `xdg-open` from `xdg-utils` and `setpriv` from `util-linux`.
 
 ![Location](docs/images/location.png)
 ![Service](docs/images/service.png)
@@ -198,6 +200,8 @@ The installer records the engine's Java executable in `conf/custom.vmoptions`:
 
 To change the runtime, stop the engine, update this path and restart the engine. The selected runtime must be Java 17 or later.
 
+The installer includes its own JavaFX runtime. The engine's selected Java runtime does not need JavaFX.
+
 ## Uninstall
 
 The uninstaller deletes the engine folder, including its local database files, logs and backups.
@@ -274,6 +278,8 @@ The tests cover:
 - Installation with an external Java runtime.
 - Engine removal.
 
+Linux desktop checks verify the invoking user's UID, groups, environment and process cleanup without opening a browser.
+
 Desktop wizard interaction, external databases and Linux init.d service operation require separate validation.
 
 ## Implementation
@@ -290,6 +296,7 @@ The wizard collects the installation plan and passes it to the installation back
 | [Model.java](src/main/java/org/openintegrationengine/installer/Model.java), [Payload.java](src/main/java/org/openintegrationengine/installer/Payload.java), [Archives.java](src/main/java/org/openintegrationengine/installer/Archives.java) | Engine detection, payload verification and extraction |
 | [Readiness.java](src/main/java/org/openintegrationengine/installer/Readiness.java) | Startup checks |
 | [Privileges.java](src/main/java/org/openintegrationengine/installer/Privileges.java) | Administrator approval and helper process |
+| [DesktopSession.java](src/main/java/org/openintegrationengine/installer/DesktopSession.java), [SystemAppearance.java](src/main/java/org/openintegrationengine/installer/SystemAppearance.java) | Desktop actions and system appearance |
 | [build.py](build.py) | Release downloads and package creation |
 | [windows_manifest.py](windows_manifest.py) | Windows launcher elevation and manifest verification |
 | [ci/smoke_install.py](ci/smoke_install.py) | Installation tests |

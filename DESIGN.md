@@ -20,4 +20,6 @@ Transitions are restrained: directional page movement settles over 240 ms, and s
 
 Bundled Java 21 and the boot-time system service are the default selections. Review describes the administrator approval and actual service scope. New installations expose network, database and administrator settings. Existing engines skip those screens and preserve their settings. Add-ons always appear after Service and before Review. Every add-on starts enabled and its exact package version and final selection appear in Review. Do not restore the removed footer note about internet connectivity.
 
+Java distinguishes the installer's bundled JavaFX runtime from the engine's Java 17+ runtime, which does not require JavaFX. Service names its actual manager and control command: systemd uses systemctl; init.d uses its service script. Done shows the manager, service ID and start/stop commands. On Linux, browser, folder and appearance actions use the verified desktop user who invoked sudo, while installation keeps its existing privilege flow.
+
 The CSS source of truth is `src/main/resources/installer.css`; UI composition lives in `Wizard.java`. JavaFX intentionally renders native controls instead of reusing the HTML/CSS implementation or embedding a browser.

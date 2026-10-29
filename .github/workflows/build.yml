@@ -105,6 +105,10 @@ jobs:
         run: |
           python ci/check_system_appearance.py
           python ci/check_completion_links.py
+      - name: Test Linux desktop session
+        if: runner.os == 'Linux'
+        working-directory: installer
+        run: python ci/check_desktop_session.py
       - name: Test Windows service operations
         if: runner.os == 'Windows'
         working-directory: installer

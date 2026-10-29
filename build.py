@@ -513,7 +513,7 @@ case "$(uname -m)" in
 esac
 if [ "$(id -u)" != 0 ]; then
   command -v sudo >/dev/null 2>&1 || {{ echo "Run this installer as root." >&2; exit 1; }}
-  exec sudo --preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR sh "$0" "$@"
+  exec sudo --preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,XDG_CURRENT_DESKTOP,DESKTOP_SESSION,XDG_SESSION_TYPE,XDG_CONFIG_HOME,XDG_CONFIG_DIRS,XDG_DATA_HOME,XDG_DATA_DIRS sh "$0" "$@"
 fi
 dir=$(mktemp -d "${{TMPDIR:-/tmp}}/oie-installer.XXXXXX") || exit 1
 trap 'rm -rf "$dir"' EXIT HUP INT TERM

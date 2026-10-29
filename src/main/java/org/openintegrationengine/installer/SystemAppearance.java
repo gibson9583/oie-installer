@@ -121,7 +121,7 @@ final class SystemAppearance implements AutoCloseable {
         if (closed.get()) return new Query(-1, "");
         Process process = null;
         try {
-            process = new ProcessBuilder(command).redirectErrorStream(true).start(); active = process;
+            process = DesktopSession.process(command).redirectErrorStream(true).start(); active = process;
             if (closed.get() || !process.waitFor(1, TimeUnit.SECONDS)) return new Query(-1, "");
             // These scalar settings fit in a few lines. Bound output and never wait on inherited pipes.
             var output = process.getInputStream();
