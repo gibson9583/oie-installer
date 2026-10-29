@@ -68,7 +68,7 @@ Each output has a `.sha256` file and `dist/build-receipt.json`.
 
 Windows EXEs are an NSIS self-extracting wrapper around the jpackage app image. The first screen is the JavaFX wizard. NSIS 3 is a Windows build prerequisite. JavaFX 21 has no Windows ARM64 build. The Windows ARM64 wizard is x64 and runs under emulation. Its engine runtime is native ARM64; pass that JDK with `--engine-java-home`. The Linux archive holds the app image; run `bin/OIE Installer JavaFX` as root.
 
-GitHub Actions builds all six outputs. Each job then installs the engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, and uninstalls it.
+GitHub Actions builds all six outputs. Each job then installs the engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, reinstalls it, and uninstalls it. It also runs the 4.6.0 install4j archive, upgrades it to the new release, and checks that settings and the database remain.
 
 The build explicitly ad-hoc signs the macOS application, wraps the finished jpackage image with `hdiutil`, and verifies its signature and every payload hash inside the DMG before handoff. Developer ID signing and notarization are still needed for public distribution. DMG creation does not request Finder Automation access.
 
@@ -150,7 +150,7 @@ The application also supports `--uninstall <engine folder> --yes`. It verifies t
 - Archive paths and links are checked before extraction. Backups refuse links or special files when a complete backup cannot be established.
 - Loopback readiness checks accept the engine’s self-signed certificate only for individual localhost HTTPS connections; global TLS settings are unchanged.
 - Pinned hashes protect integrity. Public release authentication still requires properly signed/notarized installer distributions and a trusted release pipeline.
-- The CI smoke test covers new installs and uninstall. Upgrades and the GUI are validated manually.
+- The CI smoke test does not cover the GUI or an engine installed by the install4j installer with its Windows registration or service. Validate these manually.
 
 ## Source map
 

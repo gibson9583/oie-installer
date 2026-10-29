@@ -1,6 +1,6 @@
 # Install4j behavior and validation matrix
 
-Scope: macOS ARM64/x64, Windows x64/ARM64 and Linux x64/ARM64. OIE 4.7.0/install4j 13.1.1 is the source baseline. The JavaFX wizard, add-on choices and revised Welcome/Done styling are retained. This matrix describes implemented call paths. Each CI job installs a new engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, and uninstalls it. Upgrade rows still require manual validation.
+Scope: macOS ARM64/x64, Windows x64/ARM64 and Linux x64/ARM64. OIE 4.7.0/install4j 13.1.1 is the source baseline. The JavaFX wizard, add-on choices and revised Welcome/Done styling are retained. This matrix describes implemented call paths. Each CI job installs a new engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, reinstalls it, and uninstalls it. It also upgrades a 4.6.0 install4j archive that has run once. Legacy install4j service migration still requires manual validation.
 
 | Behavior | Implementation and expected outcome | Evidence / validation |
 | --- | --- | --- |
