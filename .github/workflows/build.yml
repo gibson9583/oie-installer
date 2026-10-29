@@ -135,11 +135,22 @@ jobs:
         run: |
           package=$(ls dist/oie_unix_*-with-JRE.sh | head -1)
           docker run --rm -v "$PWD:/w:ro" debian:12 sh /w/ci/check_initd.sh "/w/$package"
-      - name: Upload installer
+      - name: Upload installer with JRE
         uses: actions/upload-artifact@v7
         with:
-          name: oie-installer-${{ matrix.id }}
-          path: installer/dist/*
+          name: oie-installer-${{ matrix.id }}-with-JRE
+          path: |
+            installer/dist/*-with-JRE.*
+            installer/dist/build-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload installer without JRE
+        uses: actions/upload-artifact@v7
+        with:
+          name: oie-installer-${{ matrix.id }}-without-JRE
+          path: |
+            installer/dist/*
+            !installer/dist/*-with-JRE.*
           if-no-files-found: error
           retention-days: 14
       - name: Preserve build diagnostics on failure
