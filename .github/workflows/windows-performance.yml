@@ -1,0 +1,38 @@
+name: Profile Windows operations
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  profile:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x64, runner: windows-2025 }
+          - { name: Windows ARM64, runner: windows-11-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Compile installer classes
+        shell: bash
+        run: python -c "import pathlib, subprocess; subprocess.run([str(pathlib.Path('mvnw.cmd').resolve()), '-B', '-Dmaven.test.skip=true', 'package'], check=True)"
+      - name: Profile Windows operations
+        shell: bash
+        run: python -u ci/profile_windows.py
+      - name: Preserve timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-performance-${{ runner.arch }}
+          path: ci/performance*.json
+          if-no-files-found: error
