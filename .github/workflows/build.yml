@@ -82,7 +82,7 @@ jobs:
           - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
           - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
           # OpenJFX 21 has no Windows ARM64 build: the wizard uses Zulu JDK FX, which includes JavaFX for ARM64.
-          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-distribution: zulu, wizard-package: jdk+fx }
+          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-jdk: zulu-fx }
           - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: sh }
           - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: sh }
     defaults:
@@ -113,13 +113,26 @@ jobs:
           cache: maven
           cache-dependency-path: installer/pom.xml
       - name: Set up the wizard JDK
-        if: matrix.wizard-distribution
-        uses: actions/setup-java@v6
-        with:
-          distribution: ${{ matrix.wizard-distribution }}
-          java-package: ${{ matrix.wizard-package }}
-          java-version: '21'
-          check-latest: true
+        # setup-java finds no Zulu JDK FX for Windows ARM64, so read Azul's metadata API directly and check the download's SHA-256.
+        if: matrix.wizard-jdk == 'zulu-fx'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $query = 'https://api.azul.com/metadata/v1/zulu/packages/?java_version=21&os=windows&arch=aarch64&archive_type=zip&java_package_type=jdk&javafx_bundled=true&latest=true&release_status=ga&availability_types=CA&page_size=1'
+          $package = @(Invoke-RestMethod $query)[0]
+          if (-not $package) { throw 'Azul lists no Zulu 21 JDK FX for Windows ARM64' }
+          $detail = Invoke-RestMethod "https://api.azul.com/metadata/v1/zulu/packages/$($package.package_uuid)"
+          Write-Host "$($package.name) $($package.java_version -join '.')"
+          $zip = Join-Path $env:RUNNER_TEMP $package.name
+          Invoke-WebRequest $package.download_url -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $detail.sha256_hash) { throw "$($package.name) does not match Azul's SHA-256" }
+          $target = Join-Path $env:RUNNER_TEMP 'zulu-fx'
+          Expand-Archive $zip $target
+          $jdk = (Get-ChildItem $target -Directory)[0].FullName
+          if (-not (Test-Path (Join-Path $jdk 'jmods\javafx.controls.jmod'))) { throw "$($package.name) has no JavaFX modules" }
+          & (Join-Path $jdk 'bin\java.exe') -version
+          "JAVA_HOME=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$jdk\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
