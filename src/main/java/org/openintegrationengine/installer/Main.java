@@ -37,18 +37,24 @@ public final class Main {
                     return;
                 }
                 if (Arrays.asList(args).contains("-q")) { quiet(args); return; }
-                if ((args.length == 2 || args.length == 3) && args[0].equals("--uninstall")) {
-                    if (args.length != 3 || !args[2].equals("--yes"))
-                        throw new IllegalArgumentException("Use --uninstall <engine folder> --yes to stop and delete that engine, including its data and backups.");
-                    Installer.uninstall(Model.expand(args[1]));
+                if (Arrays.asList(args).contains("-c")) { System.exit(TextInstaller.run(args)); return; }
+                if (args[0].equals("--uninstall") && args.length >= 3 && args[2].equals("--yes")
+                        && (args.length == 3 || args.length == 4 && args[3].equals("--delete-data"))) {
+                    Installer.uninstall(Model.expand(args[1]), args.length == 4);
                     return;
                 }
-                throw new IllegalArgumentException("Usage: OIE Installer [-q [-dir <folder>] | --unattended plan.json | --uninstall <folder> --yes]");
+                if (args[0].equals("--uninstall"))
+                    throw new IllegalArgumentException("Use --uninstall <engine folder> --yes [--delete-data]. Without --delete-data the configuration, database, logs and backups stay.");
+                throw new IllegalArgumentException("Usage: OIE Installer [-c [-dir <folder>] | -q [-dir <folder>] | --unattended plan.json | --uninstall <folder> --yes [--delete-data]]");
             } catch (Exception e) {
                 System.err.println(e.getMessage());
                 if (System.getenv("OIE_INSTALLER_DEBUG") != null) e.printStackTrace();
                 System.exit(e instanceof IllegalArgumentException ? 2 : 1);
             }
+        } else if (!Model.WINDOWS && !Model.MAC && System.getenv().getOrDefault("DISPLAY", "").isEmpty() && System.getenv().getOrDefault("WAYLAND_DISPLAY", "").isEmpty()) {
+            // Like install4j, a Linux system without a desktop uses the text installer.
+            try { System.exit(TextInstaller.run(new String[0])); }
+            catch (Exception e) { System.err.println(e.getMessage()); System.exit(1); }
         } else {
             Application.launch(Wizard.class);
         }

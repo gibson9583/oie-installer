@@ -55,15 +55,20 @@ final class NativeProcesses {
         Path java = payload.engineJava(home); String classpath = backendClasspath(home);
         if (Model.WINDOWS) {
             String script = """
-                param([switch]$Yes)
+                param([switch]$Yes,[switch]$DeleteData)
                 $ErrorActionPreference='Stop'
-                if(-not $Yes -and (Read-Host 'Delete this engine, its database, logs and backups? Type yes') -ne 'yes'){exit 1}
+                if(-not $Yes){
+                  if((Read-Host 'Remove Open Integration Engine from this computer? Type yes') -ne 'yes'){exit 1}
+                  $DeleteData=((Read-Host 'Also delete the configuration, database, logs and backups? Type delete to delete them, or press Enter to keep them') -eq 'delete')
+                }
                 $admin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
                 if(-not $admin){
-                  $p=Start-Process powershell.exe -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Yes') -Wait -PassThru
+                  $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Yes'; if($DeleteData){$arguments+=' -DeleteData'}
+                  $p=Start-Process powershell.exe -Verb RunAs -ArgumentList $arguments -Wait -PassThru
                   exit $p.ExitCode
                 }
-                & %s -cp %s org.openintegrationengine.installer.Main --uninstall %s --yes
+                $data=@(); if($DeleteData){$data=@('--delete-data')}
+                & %s -cp %s org.openintegrationengine.installer.Main --uninstall %s --yes @data
                 exit $LASTEXITCODE
                 """.formatted(Privileges.powershell(java.toString()), Privileges.powershell(classpath), Privileges.powershell(home.toString()));
             Files.writeString(FilesSupport.safeTarget(home, "uninstall.ps1"), script);
@@ -91,13 +96,19 @@ final class NativeProcesses {
             String script = """
                 #!/bin/sh
                 set -eu
-                if [ "$#" -eq 0 ] || [ "$1" != --yes ]; then
-                  printf 'This deletes the engine, database, logs and backups in %%s. Type yes: ' %s
+                data=
+                if [ "${1:-}" = --yes ]; then
+                  if [ "${2:-}" = --delete-data ]; then data=--delete-data; fi
+                else
+                  printf 'Remove Open Integration Engine from %%s? Type yes: ' %s
                   read -r answer
                   [ "$answer" = yes ] || exit 1
+                  printf 'Also delete the configuration, database, logs and backups? Type delete to delete them, or press Enter to keep them: '
+                  read -r answer
+                  if [ "$answer" = delete ]; then data=--delete-data; fi
                 fi
-                if [ "$(id -u)" != 0 ]; then exec sudo %s; fi
-                exec %s
+                if [ "$(id -u)" != 0 ]; then exec sudo %s $data; fi
+                exec %s $data
                 """.formatted(FilesSupport.quote(home.toString()), invoke, invoke);
             Path uninstaller = FilesSupport.safeTarget(home, "uninstall"); Files.writeString(uninstaller, script); FilesSupport.executable(uninstaller);
             // install4j links the service and command-line launchers into /usr/local/bin on Linux.
@@ -155,8 +166,11 @@ final class NativeProcesses {
             """.formatted(Privileges.powershell(home.toString()), Privileges.powershell(backup.resolve("previous-uninstall-registration.json").toString()));
         Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
     }
-    static void windowsRemove(Path home) throws Exception {
+    /** The uninstaller runs from the engine folder's runtime, so the files go after it exits. */
+    static void windowsRemove(Path home, List<Path> targets) throws Exception {
         Path script = Files.createTempFile("oie-uninstall-", ".ps1"); Json.privateFile(script);
+        StringJoiner paths = new StringJoiner(",", "@(", ")");
+        for (Path target : targets) paths.add(Privileges.powershell(target.toString()));
         String cleanup = """
             $ErrorActionPreference='Stop'
             $root=%s
@@ -164,10 +178,12 @@ final class NativeProcesses {
               $owned=Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\\',[StringComparison]::OrdinalIgnoreCase)}
               if(-not $owned){break}; Start-Sleep -Seconds 1
             }
-            if($owned){throw 'An engine executable is still running. The engine folder was retained.'}
-            Remove-Item -LiteralPath $root -Recurse -Force
+            if($owned){throw 'An engine executable is still running. The engine files were retained.'}
+            foreach($target in %s){ if(Test-Path -LiteralPath $target){ Remove-Item -LiteralPath $target -Recurse -Force } }
+            $extensions=Join-Path $root 'extensions'
+            if((Test-Path -LiteralPath $extensions) -and -not (Get-ChildItem -LiteralPath $extensions -Force)){ Remove-Item -LiteralPath $extensions -Force }
             Remove-Item -LiteralPath $PSCommandPath -Force
-            """.formatted(Privileges.powershell(home.toString()));
+            """.formatted(Privileges.powershell(home.toString()), paths);
         Files.writeString(script, cleanup);
         new ProcessBuilder("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script.toString())
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(script.resolveSibling(script.getFileName() + ".log").toFile())).redirectErrorStream(true).start();

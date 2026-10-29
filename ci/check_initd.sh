@@ -27,5 +27,7 @@ until /etc/init.d/oieservice status >/dev/null; do tries=$((tries + 1)); [ $trie
 [ ! -e /etc/init.d/oieservice ] || fail "/etc/init.d/oieservice remains"
 if ls /etc/rc2.d/S*oieservice >/dev/null 2>&1; then fail "the rc links remain"; fi
 [ ! -e /usr/local/bin/oieservice ] || fail "/usr/local/bin/oieservice remains"
-[ ! -e "$home" ] || fail "$home remains"
+[ ! -e "$home/server-lib" ] && [ ! -e "$home/oieservice" ] || fail "the program files remain"
+[ -f "$home/conf/mirth.properties" ] && [ -d "$home/appdata" ] || fail "the uninstaller removed the configuration or data"
+rm -rf "$home"
 echo "init.d pass complete"

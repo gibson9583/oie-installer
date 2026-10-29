@@ -14,30 +14,19 @@ concurrency:
   group: native-installers-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  installer:
-    # The OIE install4j media: each platform with and without a bundled engine Java runtime.
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
-          - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
-          - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
-          # JavaFX 21 has no Windows ARM64 build: the wizard runs as x64; the engine runtime is native ARM64.
-          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-architecture: x64 }
-          - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: sh }
-          - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: sh }
-    defaults:
-      run:
-        shell: bash
+  engine:
+    # The engine distribution, built once from its release tag with Gradle and shared by every platform.
+    name: Engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           path: installer
       - name: Resolve engine release
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.engine_version || 'latest' }}
@@ -48,7 +37,65 @@ jobs:
             version="${version#v}"
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid engine release: $version"; exit 1; }
-          echo "ENGINE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: OpenIntegrationEngine/engine
+          ref: v${{ steps.version.outputs.version }}
+          fetch-depth: 1
+          path: engine
+      - name: Set up the Gradle JDK
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            engine/**/*.gradle*
+            engine/gradle/libs.versions.toml
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the engine
+        working-directory: installer
+        run: python -u build.py --version "${{ steps.version.outputs.version }}" --engine-repo ../engine --java-home "$JAVA_HOME" --engine-only
+      - uses: actions/upload-artifact@v7
+        with:
+          name: engine-build
+          path: installer/dist/engine/*
+          if-no-files-found: error
+          retention-days: 14
+
+  installer:
+    # The OIE install4j media: each platform with and without a bundled engine Java runtime, and the engine archives.
+    name: ${{ matrix.name }}
+    needs: engine
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      ENGINE_VERSION: ${{ needs.engine.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
+          - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
+          - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
+          # OpenJFX 21 has no Windows ARM64 build: the wizard uses Zulu JDK FX, which includes JavaFX for ARM64.
+          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-distribution: zulu, wizard-package: jdk+fx }
+          - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: sh }
+          - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: sh }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: installer
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine-build
+          path: installer/target/engine-build
       - uses: actions/checkout@v7
         with:
           repository: OpenIntegrationEngine/engine
@@ -66,12 +113,12 @@ jobs:
           cache: maven
           cache-dependency-path: installer/pom.xml
       - name: Set up the wizard JDK
-        if: matrix.wizard-architecture
+        if: matrix.wizard-distribution
         uses: actions/setup-java@v6
         with:
-          distribution: temurin
+          distribution: ${{ matrix.wizard-distribution }}
+          java-package: ${{ matrix.wizard-package }}
           java-version: '21'
-          architecture: ${{ matrix.wizard-architecture }}
           check-latest: true
       - uses: actions/setup-python@v7
         with:
@@ -96,7 +143,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ENGINE_JDK: ${{ steps.engine-jdk.outputs.path }}
-        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}"
+        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --engine-archive "target/engine-build/oie-engine-$ENGINE_VERSION.tar.gz" --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}"
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
@@ -151,6 +198,19 @@ jobs:
           path: |
             installer/dist/*
             !installer/dist/*-with-JRE.*
+            !installer/dist/*.tar.gz*
+            !installer/dist/*.zip*
+            !installer/dist/engine
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload engine archive
+        if: runner.os != 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oie-archive-${{ matrix.id }}
+          path: |
+            installer/dist/*.tar.gz*
+            installer/dist/*.zip*
           if-no-files-found: error
           retention-days: 14
       - name: Preserve build diagnostics on failure

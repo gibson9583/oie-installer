@@ -97,8 +97,8 @@ final class Archives {
     static void retire(Path home, Layout layout, Path backup) throws IOException {
         for (String top : layout.top()) if (!KEEP.contains(top) && !top.equals("extensions")) moveIfPresent(home.resolve(top), backup.resolve(top));
         for (String extension : layout.extensions()) moveIfPresent(home.resolve("extensions").resolve(extension), backup.resolve("extensions").resolve(extension));
-        // These files belong to the old install4j distribution and are not part of the native engine image.
-        for (String legacy : List.of(".install4j", "jre", "oieserver.ps1", "oiemanager", "oiemanager.exe", "uninstall", "uninstall.exe", "uninstall.dat"))
+        // These files belong to the old install4j distribution, or the earlier WinSW service wrapper, and are not part of the native engine image.
+        for (String legacy : List.of(".install4j", "jre", "oieserver.ps1", "oiemanager", "oiemanager.exe", "uninstall", "uninstall.exe", "uninstall.dat", "oie-service.exe", "oie-service.xml"))
             if (!layout.top().contains(legacy)) moveIfPresent(home.resolve(legacy), backup.resolve(legacy));
     }
     static void moveIfPresent(Path from, Path into) throws IOException {

@@ -2,7 +2,7 @@
 
 The Open Integration Engine Installer installs, upgrades and removes Open Integration Engine (OIE) on Windows, macOS and Linux.
 
-The installer uses JavaFX for its desktop wizard and `jpackage` for its application runtime and native launchers. Each package contains the engine and optional add-ons. Installation runs without downloading additional files.
+The installer uses JavaFX for its desktop wizard and `jpackage` for its application runtime and native launchers. The build compiles the engine from its release tag with Gradle. Each package contains the engine and optional add-ons. Installation runs without downloading additional files.
 
 ![Welcome](docs/images/welcome.png)
 
@@ -24,7 +24,16 @@ The build produces two packages for each platform:
 
 `<version>` uses underscores, for example `4_7_0`. Each package has a `.sha256` checksum file.
 
-On Windows ARM64, the wizard runs as an x64 application under emulation. The bundled engine runtime is ARM64.
+The build also produces engine archives without an installer:
+
+| Platform | Archive |
+| --- | --- |
+| Windows x64 | `oie_windows-x64_<version>.zip` |
+| Windows ARM64 | `oie_windows-arm64_<version>.zip` |
+| Linux x64 | `oie_unix_<version>.tar.gz` |
+| Linux ARM64 | `oie_unix_<version>-aarch64.tar.gz` |
+
+See [Engine archives](#engine-archives).
 
 macOS packages use ad hoc signing. Windows packages are unsigned.
 
@@ -77,6 +86,16 @@ These add-ons are bundled and selected by default:
 - **Simple Channel History:** records channel revisions.
 
 The review screen shows the version of each selected add-on.
+
+### Text mode
+
+Use `-c` to answer the installer's questions in a terminal. Linux uses text mode when no desktop is available.
+
+```bash
+sudo sh oie_unix_4_7_0-with-JRE.sh -c
+```
+
+Text mode asks the same questions as the wizard. Press Enter to accept the value in brackets. Add `-dir <folder>` to set the suggested engine folder.
 
 ### Unattended installation
 
@@ -179,12 +198,12 @@ Windows launchers use the `.exe` extension. `oiecommand.exe` requests administra
 | --- | --- | --- | --- |
 | Service | `Open Integration Engine Service` | `com.oie.oieservice` | `oieservice.service` |
 | Account | Local System | root | root |
-| Service definition | `oie-service.xml` in the engine folder | `/Library/LaunchDaemons/com.oie.oieservice.plist` | `/etc/systemd/system/oieservice.service` |
+| Service definition | Service Control Manager entry for `oieservice.exe` | `/Library/LaunchDaemons/com.oie.oieservice.plist` | `/etc/systemd/system/oieservice.service` |
 | Shortcuts | Start Menu group **Open Integration Engine** | None | `/usr/local/bin/oieservice`, `/usr/local/bin/oiecommand` |
 
 The installer supports one registered engine service per computer. Services start automatically at boot.
 
-Windows uses the WinSW 2.12.0 wrapper, `oie-service.exe`, to run `oieservice.exe`. Linux uses systemd when `/run/systemd/system` exists. Systems with an init.d service manager use `/etc/init.d/oieservice`.
+On Windows, `oieservice.exe` is the service program. It stops the engine with a console Ctrl+C and ends it after 60 seconds if it has not stopped. Its output goes to `logs/oieservice.out`. Linux uses systemd when `/run/systemd/system` exists. Systems with an init.d service manager use `/etc/init.d/oieservice`.
 
 ### Service commands
 
@@ -215,37 +234,63 @@ The installer includes its own JavaFX runtime. The engine's selected Java runtim
 
 ## Uninstall
 
-The uninstaller deletes the engine folder, including its local database files, logs and backups.
+The uninstaller removes the program files. It keeps the configuration, database, logs, backups, custom libraries and add-ons that it did not install, unless you choose to delete them.
 
 1. Close a Windows console engine if one is running.
 2. Start the uninstaller:
    - Windows: uninstall **Open Integration Engine** through **Apps & Features**, or run `uninstall.exe` in the engine folder.
    - macOS and Linux: run `sudo "/path/to/engine/uninstall"`.
-3. Type `yes` to confirm removal. Use `--yes` to skip confirmation.
+3. Type `yes` to confirm removal.
+4. Press Enter to keep the data. Type `delete` to also delete the configuration, database, logs and backups.
+
+For a removal without questions, use `--yes`. Add `--delete-data` to delete the data.
 
 The uninstaller stops the registered engine service and removes its service definition, shortcuts and application registration.
+
+To use the kept data again, install into the same folder. The installer treats it as a reinstallation and keeps the database, ports and credentials.
+
+## Engine archives
+
+An engine archive contains the engine and its launchers, without the installer and add-ons. The engine runs on an installed Java 17 or later.
+
+1. Extract the archive. It contains the `oie` folder.
+2. Set `JAVA_HOME` to Java 17 or later, or add `-java-cmd /path/to/java` to `conf/custom.vmoptions`.
+3. Start the engine:
+   - In the foreground: `./oieserver`, or `oieserver.exe` on Windows.
+   - In the background on Linux: `./oieservice start`.
+   - As a service: `sudo ./oieservice install` on Linux, or `oieservice.exe /install` from an elevated prompt on Windows.
+
+The launchers use `JAVA_HOME`, then the `java` command on the `PATH`. Service installation records that Java in `conf/custom.vmoptions`, because a service does not use your environment. `oieservice uninstall`, or `oieservice.exe /uninstall`, removes the service.
 
 ## Build from source
 
 Requirements:
 
 - JDK 21 or later, including `jpackage`.
+- JDK 17 for the engine's Gradle build.
 - Python 3.12 or later.
 - An engine repository clone with the requested release tag.
-- Windows: NSIS 3 and the Windows SDK with `mt.exe`.
+- Windows: NSIS 3, the Windows SDK with `mt.exe`, and the .NET Framework 4 C# compiler that Windows includes.
+- Windows ARM64: a JDK 21 that includes JavaFX, such as Azul Zulu JDK FX, for `--java-home`.
 - macOS: the Xcode command-line tools.
 
 The Maven Wrapper supplies Maven. Build on the operating system and architecture of the target package.
 
 ```bash
-python3 build.py --engine-repo ../oie --java-home /path/to/jdk-21
+python3 build.py --engine-repo ../oie --java-home /path/to/jdk-21 --gradle-java-home /path/to/jdk-17
 ```
 
-The build downloads the engine release and compatible add-ons. It verifies the downloaded files against published SHA-256 checksums and checks available GitHub asset digests.
+The build exports the release tag from the engine repository and builds it with `gradlew build -PdisableTests=true`. It caches the result by tag commit. It then downloads compatible add-ons and verifies them against published SHA-256 checksums and GitHub asset digests.
 
-It stages the engine files and generates native launchers with `jpackage`. On Windows, it sets and verifies the command-line launcher's administrator execution level.
+The engine build signs its client jars with the engine repository's self-signed key. To sign with a release certificate, pass the engine's keystore settings to Gradle:
 
-The build writes file hashes to `payload/manifest.json`. It verifies these hashes after packaging the application image. Both package variants and their `.sha256` files go to `dist/`.
+```bash
+python3 build.py --engine-gradle-arg=-Pkeystore_property_file=/path/to/keystore.properties ...
+```
+
+The build stages the engine files and generates native launchers with `jpackage`. On Windows, it compiles `oieservice.exe` from [OieService.cs](packaging/windows/OieService.cs). It also sets and verifies the command-line launcher's administrator execution level.
+
+The build compiles the installer and runs its unit tests. It writes file hashes to `payload/manifest.json` and verifies these hashes after packaging the application image. The packages, the engine archive and their `.sha256` files go to `dist/`.
 
 | Option | Effect |
 | --- | --- |
@@ -254,15 +299,20 @@ The build writes file hashes to `payload/manifest.json`. It verifies these hashe
 | `--app-only` | Reuses the prepared payload inputs |
 | `--type app-image` | Builds application folders without package wrappers |
 | `--engine-java-home <jdk>` | Selects the JDK for the engine launchers and bundled runtime |
-| `--refresh` | Downloads the release files again |
+| `--gradle-java-home <jdk>` | Selects the JDK 17 for the engine build; the default is `--java-home` |
+| `--engine-gradle-arg <arg>` | Adds a Gradle argument to the engine build |
+| `--engine-only` | Builds the engine into `dist/engine/` and stops |
+| `--engine-archive <file>` | Uses an engine build from `--engine-only` |
+| `--refresh` | Builds the engine and downloads the add-ons again |
 
-Windows ARM64 builds use an x64 JDK for the JavaFX wizard. Pass an ARM64 JDK through `--engine-java-home` for the engine.
+On Windows ARM64, the wizard and the engine runtime are both native ARM64.
 
 ### Validation
 
-Run the installer support regression tests:
+Run the installer unit tests and the support regression tests:
 
 ```bash
+./mvnw test
 python3 -m unittest discover -s tests -v
 ```
 
@@ -276,7 +326,7 @@ python3 ci/check_file_cleanup.py
 
 These checks cover recursive deletion, read-only files, symbolic links and repeated cleanup. Windows checks also cover locked files and retry after closing a file handle.
 
-[GitHub Actions](.github/workflows/build.yml) builds both package variants for all six platform and architecture combinations. Each job runs installation tests against the packaged application images.
+[GitHub Actions](.github/workflows/build.yml) builds the engine once, then both package variants for all six platform and architecture combinations. Each job runs installation tests against the packaged application images.
 
 The tests cover:
 
@@ -289,7 +339,9 @@ The tests cover:
 - Linux without systemd, with the `/etc/init.d/oieservice` service, in a Debian container.
 - Failed upgrades, rollback and retry.
 - Installation with an external Java runtime.
-- Engine removal.
+- Text mode on Linux.
+- The engine archives on Windows and Linux, including Windows service registration.
+- Engine removal that keeps the data, and installation again over that data.
 
 Linux desktop checks verify the invoking user's UID, groups, environment and process cleanup without opening a browser.
 
@@ -309,13 +361,15 @@ On macOS, the helper asks the original user session to start a process-mode engi
 | [Installer.java](src/main/java/org/openintegrationengine/installer/Installer.java) | Installation, upgrades, rollback and removal |
 | [Services.java](src/main/java/org/openintegrationengine/installer/Services.java) | Service definitions and registration |
 | [NativeProcesses.java](src/main/java/org/openintegrationengine/installer/NativeProcesses.java) | Engine processes, uninstaller, shortcuts and application registration |
+| [TextInstaller.java](src/main/java/org/openintegrationengine/installer/TextInstaller.java) | Text mode |
 | [ServiceControl.java](src/main/java/org/openintegrationengine/installer/ServiceControl.java), [EngineBootstrap.java](src/main/java/org/openintegrationengine/installer/EngineBootstrap.java) | Service commands and engine launchers |
+| [OieService.cs](packaging/windows/OieService.cs) | The Windows service program |
 | [Model.java](src/main/java/org/openintegrationengine/installer/Model.java), [Payload.java](src/main/java/org/openintegrationengine/installer/Payload.java), [Archives.java](src/main/java/org/openintegrationengine/installer/Archives.java) | Engine detection, payload verification and extraction |
 | [Readiness.java](src/main/java/org/openintegrationengine/installer/Readiness.java) | Startup checks |
 | [Privileges.java](src/main/java/org/openintegrationengine/installer/Privileges.java) | Administrator approval and helper process |
 | [SessionStart.java](src/main/java/org/openintegrationengine/installer/SessionStart.java) | Process startup requests between the helper and user session |
 | [DesktopSession.java](src/main/java/org/openintegrationengine/installer/DesktopSession.java), [SystemAppearance.java](src/main/java/org/openintegrationengine/installer/SystemAppearance.java) | Desktop actions and system appearance |
-| [build.py](build.py) | Release downloads and package creation |
+| [build.py](build.py) | Engine build, add-on downloads and package creation |
 | [windows_manifest.py](windows_manifest.py) | Windows launcher elevation and manifest verification |
 | [ci/smoke_install.py](ci/smoke_install.py) | Installation tests |
 | [ci/check_file_cleanup.py](ci/check_file_cleanup.py) | Filesystem cleanup checks |

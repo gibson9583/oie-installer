@@ -121,17 +121,10 @@ final class Services {
             Model.command("chown", "root:wheel", LAUNCHD_FILE.toString()); Model.command("chmod", "644", LAUNCHD_FILE.toString());
             registered.accept(find()); Model.command("launchctl", "bootstrap", "system", LAUNCHD_FILE.toString());
         } else if (Model.WINDOWS) {
-            Path wrapper = home.resolve("oie-service.exe"), file = FilesSupport.safeTarget(home, "oie-service.xml");
-            if (!Files.isRegularFile(wrapper)) throw new IOException("The Windows service wrapper is missing.");
-            // install4j registers an automatic LocalSystem service with no description and no failure actions.
-            Files.writeString(file, """
-                <service><id>%s</id><name>%s</name><description></description>
-                <executable>%s</executable><workingdirectory>%s</workingdirectory><startmode>Automatic</startmode>
-                <stoptimeout>60 sec</stoptimeout><stopparentprocessfirst>true</stopparentprocessfirst>
-                <logpath>%s</logpath><log mode="roll"/>
-                </service>
-                """.formatted(WINDOWS_NAME, WINDOWS_NAME, xml(home.resolve("oieservice.exe").toString()), xml(home.toString()), xml(home.resolve("logs").toString())));
-            Model.command(wrapper.toString(), "install"); registered.accept(find()); Model.command(wrapper.toString(), "start");
+            Path program = home.resolve("oieservice.exe");
+            if (!Files.isRegularFile(program)) throw new IOException("The Windows service program is missing.");
+            // install4j registers oieservice.exe as an automatic Local System service with no description and no failure actions.
+            Model.command(program.toString(), "--create-service"); registered.accept(find()); Model.command("sc.exe", "start", WINDOWS_NAME);
         } else if (supported().equals("systemd")) {
             Files.writeString(UNIT_FILE, "[Unit]\nDescription=" + WINDOWS_NAME + "\nBefore=multi-user.target graphical.target\n"
                     + "After=network-online.target remote-fs.target time-sync.target\nWants=network-online.target\n\n[Service]\nType=" + (systemdVersion() >= 240 ? "exec" : "simple")

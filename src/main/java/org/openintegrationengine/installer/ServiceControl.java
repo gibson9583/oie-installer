@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.nio.file.*;
 import java.time.Instant;
+import java.util.*;
 
 /** install4j's oieservice verbs. Exit codes follow LSB init scripts. */
 final class ServiceControl {
@@ -73,11 +74,29 @@ final class ServiceControl {
     private static int install(Path home) throws Exception {
         administrator("install");
         if (Services.detect(home) != null) { System.out.println("The engine service is already installed"); return 0; }
+        pinJava(home);
         ObjectNode[] installed = {null};
         Services.install(home, record -> installed[0] = record);
         record(home, installed[0]);
         System.out.println("Installed and started the engine service");
         return 0;
+    }
+    /**
+     * A service does not see the administrator's JAVA_HOME or PATH. An engine unpacked from an archive has no -java-cmd,
+     * so record the Java found now, as the installer does.
+     */
+    private static void pinJava(Path home) throws Exception {
+        if (EngineBootstrap.configuredJava(home, "service") != null || System.getenv("OIE_JAVA_PATH") != null) return;
+        Path java = EngineBootstrap.installedJava(System.getenv());
+        Model.JavaRuntime runtime = java == null ? null : Model.probe(java);
+        if (runtime == null || !runtime.supported())
+            throw new IOException("The service needs Java 17 or later. Set JAVA_HOME to it, or add -java-cmd <path to java> to conf/custom.vmoptions.");
+        Path options = FilesSupport.safeTarget(home, "conf/custom.vmoptions");
+        List<String> lines = new ArrayList<>(Files.readAllLines(options));
+        int marker = lines.indexOf("# Add custom options above this comment.");
+        lines.add(marker < 0 ? lines.size() : marker, "-java-cmd " + runtime.path());
+        Files.writeString(options, String.join("\n", lines) + "\n");
+        System.out.println("The service uses Java " + runtime.version() + ": " + runtime.path());
     }
     private static int uninstall(Path home, ObjectNode service) throws Exception {
         administrator("uninstall");

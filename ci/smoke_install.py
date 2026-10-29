@@ -195,8 +195,9 @@ def install4j_output(home: Path, service: bool) -> None:
         verify_administrator(home / "oiecommand.exe")
         version = json.loads((installer()[1] / "payload/manifest.json").read_text(encoding="utf-8"))["version"]
         windows_registration(home, version)
-        if service and not windows_service_binary().lower().startswith(str(home).lower()):
-            raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home}")
+        # install4j's service program: <engine>\oieservice.exe.
+        if service and windows_service_binary().lower() != str(home / "oieservice.exe").lower():
+            raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home / 'oieservice.exe'}")
     if LINUX:
         for name in ("oieservice", "oiecommand"):
             link = Path("/usr/local/bin", name)
@@ -218,6 +219,28 @@ def close_console_engine(home: Path) -> None:
 
 def launcher(home: Path, name: str) -> Path:
     return home / (name + EXE)
+
+
+def keep_data(home: Path, plan: Path, command: list, java: Path, classpath: str, https: int) -> None:
+    """Uninstall without --delete-data keeps the settings and database; installing again continues with them."""
+    print("== Uninstall and keep the data", flush=True)
+    run([launcher(home, "uninstall"), "--yes"])
+    # Windows removes the program files after the uninstaller exits.
+    wait(lambda: not (home / "server-lib").exists() and not launcher(home, "oieserver").exists(), "program file removal", seconds=180)
+    for kept in ("conf/mirth.properties", "appdata/mirthdb", "logs/mirth.log", "oie-installer.json"):
+        if not (home / kept).exists():
+            raise SystemExit(f"The uninstaller removed {kept}")
+    if launcher(home, "uninstall").exists() or (home / "extensions/websupport").exists():
+        raise SystemExit("The uninstaller left program files")
+    if not WINDOWS and service_definition().exists():
+        raise SystemExit("The uninstaller left the service registered")
+    if WINDOWS:
+        windows_registration(home, None)
+    print("== Install again over the kept data", flush=True)
+    run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
+    wait(lambda: port_open(https), f"HTTPS port {https}")
+    # The administrator password from the first installation still signs in: the database was kept.
+    wait(lambda: run(command, expect=None, timeout=180) == 0, "oiecommand on the kept database", seconds=240)
 
 
 def smoke(service: bool, http: int, https: int) -> None:
@@ -264,6 +287,7 @@ def smoke(service: bool, http: int, https: int) -> None:
                 print("== Reinstall over the installed engine", flush=True)
                 run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
                 wait(lambda: run([service_launcher, "status"], expect=None) == 0, "reinstalled engine")
+                keep_data(home, plan, command, java, classpath, https)
         except BaseException:
             failed = True
             if home.exists():
@@ -274,7 +298,7 @@ def smoke(service: bool, http: int, https: int) -> None:
                 close_console_engine(home)
             if launcher(home, "uninstall").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
                 # Windows removes the folder after the uninstaller exits.
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
@@ -406,7 +430,7 @@ def upgrade(http: int, https: int) -> None:
         finally:
             if launcher(home, "uninstall").is_file() and (home / "oie-installer.json").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
                 except SystemExit as error:
@@ -506,8 +530,8 @@ def legacy_installer(http: int, https: int) -> None:
             plan.write_text(json.dumps({"installDir": str(home), "javaCmd": "@bundled", "service": True}))
             print(f"== Upgrade the running install4j {PREVIOUS} service", flush=True)
             run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
-            # install4j and this installer use the same service names; on Windows the service now runs the WinSW wrapper.
-            if WINDOWS and not windows_service_binary().lower().endswith("oie-service.exe"):
+            # install4j and this installer use the same service name and program, oieservice.exe; the program is now this installer's.
+            if WINDOWS and windows_service_binary().lower() != str(home / "oieservice.exe").lower():
                 raise SystemExit("The install4j service was not replaced")
             install4j_output(home, True)
             if (home / ".install4j").exists():
@@ -540,7 +564,7 @@ def legacy_installer(http: int, https: int) -> None:
         finally:
             if launcher(home, "uninstall").is_file() and (home / "oie-installer.json").is_file():
                 print(f"== Uninstall {home}", flush=True)
-                run([launcher(home, "uninstall"), "--yes"], expect=None)
+                run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
                 try:
                     wait(lambda: not home.exists(), "engine folder removal", seconds=180)
                 except SystemExit as error:
@@ -583,7 +607,7 @@ def quiet_no_jre() -> None:
         raise
     finally:
         if launcher(home, "uninstall").is_file():
-            run([launcher(home, "uninstall"), "--yes"], expect=None)
+            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
             try:
                 wait(lambda: not home.exists(), "engine folder removal", seconds=180)
             except SystemExit as error:
@@ -627,7 +651,7 @@ def downloaded_package() -> None:
         if mount:
             run(["hdiutil", "detach", mount], expect=None)
         if launcher(home, "uninstall").is_file():
-            run([launcher(home, "uninstall"), "--yes"], expect=None)
+            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
             try:
                 wait(lambda: not home.exists(), "engine folder removal", seconds=180)
             except SystemExit as error:
@@ -635,6 +659,102 @@ def downloaded_package() -> None:
                     raise
                 print(error, flush=True)
     print("== Downloaded package pass complete", flush=True)
+
+
+def java_cmd(home: Path) -> bool:
+    """conf/custom.vmoptions sets -java-cmd; its comments mention the directive."""
+    return any(line.strip().startswith("-java-cmd ") for line in (home / "conf/custom.vmoptions").read_text().splitlines())
+
+
+def archive_media(http: int, https: int) -> None:
+    """The engine archive, like install4j's: unpack it, run it on an installed Java, register and remove the service."""
+    archives = sorted((ROOT / "dist").glob("oie_*.zip" if WINDOWS else "oie_*.tar.gz"))
+    if MAC or not archives:
+        print("== No engine archive on this platform; skipped", flush=True)
+        return
+    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/opt")
+    home = base / f"oie-smoke-archive-{secrets.token_hex(3)}"
+    # A full Java 17+ runtime, as a user installs it: the engine runtime from the -with-JRE payload.
+    env = dict(os.environ, JAVA_HOME=str(engine_java_home()))
+    with tempfile.TemporaryDirectory() as work:
+        work = Path(work)
+        try:
+            print(f"== {archives[0].name} into {home}", flush=True)
+            if WINDOWS:
+                with zipfile.ZipFile(archives[0]) as package:
+                    package.extractall(work)
+            else:
+                with tarfile.open(archives[0]) as package:
+                    package.extractall(work, filter="data")
+            shutil.move(str(work / "oie"), str(home))
+            for name in ("oieserver", "oieservice", "oiecommand"):
+                if not launcher(home, name).is_file():
+                    raise SystemExit(f"The archive has no {name} launcher")
+            if launcher(home, "uninstall").exists() or java_cmd(home):
+                raise SystemExit("The archive contains installer-only settings")
+            properties = home / "conf/mirth.properties"
+            text = re.sub(r"(?m)^http\.port\s*=.*$", f"http.port = {http}", properties.read_text(encoding="latin-1"))
+            properties.write_text(re.sub(r"(?m)^https\.port\s*=.*$", f"https.port = {https}", text), encoding="latin-1")
+            service_launcher = launcher(home, "oieservice")
+            run([service_launcher, "status"], expect=3, env=env)
+            if WINDOWS:
+                # install4j's archive registers its service with oieservice.exe /install.
+                run([service_launcher, "/install"], env=env)
+                if not java_cmd(home):
+                    raise SystemExit("oieservice /install did not record the Java runtime for the service")
+                if windows_service_binary().lower() != str(home / "oieservice.exe").lower():
+                    raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home / 'oieservice.exe'}")
+            else:
+                run([service_launcher, "start"], env=env)
+            wait(lambda: run([service_launcher, "status"], expect=None, env=env) == 0, "oieservice status")
+            wait(lambda: port_open(https), f"HTTPS port {https}")
+            run([service_launcher, "/uninstall" if WINDOWS else "stop"], env=env)
+            wait(lambda: run([service_launcher, "status"], expect=None, env=env) == 3, "the engine to stop", seconds=120)
+            wait(lambda: not port_open(https), f"HTTPS port {https} to close", seconds=120)
+        except BaseException:
+            if home.exists():
+                diagnostics(home)
+            if WINDOWS:
+                run([launcher(home, "oieservice"), "/uninstall"], expect=None, env=env)
+            raise
+        finally:
+            if not WINDOWS:
+                run([launcher(home, "oieservice"), "stop"], expect=None, env=env)
+            shutil.rmtree(home, ignore_errors=True)
+    print("== Engine archive pass complete", flush=True)
+
+
+def text_mode(http: int, https: int) -> None:
+    """install4j's console mode, -c, as on a Linux server without a desktop: answer each question on standard input."""
+    if not LINUX:
+        print("== Text mode is checked on Linux; skipped", flush=True)
+        return
+    home = Path("/opt") / f"oie-smoke-text-{secrets.token_hex(3)}"
+    java, app = installer()
+    classpath = os.pathsep.join([str(app / "oie-installer-jpackage.jar"), str(app / "lib" / "*")])
+    password = "OIE-" + secrets.token_urlsafe(18)
+    # License (skip to the end, accept), folder, bundled Java, ports, Derby, password twice, normal process, three add-ons, install.
+    answers = "\n".join(["a", "y", "", "", str(http), str(https), "", password, password, "n", "", "", "", ""]) + "\n"
+    try:
+        print(f"== Text mode -c -dir {home}", flush=True)
+        env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+        result = subprocess.run([str(java), "-cp", classpath, "org.openintegrationengine.installer.Main", "-c", "-dir", str(home)],
+                                input=answers, capture_output=True, text=True, timeout=900, env=env)
+        print(result.stdout[-4000:] + result.stderr[-4000:], flush=True)
+        if result.returncode != 0 or f"admin / {password}" not in result.stdout:
+            raise SystemExit(f"The text-mode installation failed with exit {result.returncode}")
+        install4j_output(home, False)
+        run([launcher(home, "oieservice"), "status"], expect=0)
+        wait(lambda: web_client(https), "the OIE Web Client", seconds=180)
+    except BaseException:
+        if home.exists():
+            diagnostics(home)
+        raise
+    finally:
+        if launcher(home, "uninstall").is_file():
+            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
+        shutil.rmtree(home, ignore_errors=True)
+    print("== Text mode pass complete", flush=True)
 
 
 def main() -> int:
@@ -646,6 +766,8 @@ def main() -> int:
     legacy_installer(48080, 48443)
     quiet_no_jre()
     downloaded_package()
+    archive_media(58080, 58443)
+    text_mode(19080, 19443)
     return 0
 
 

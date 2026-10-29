@@ -182,6 +182,7 @@ final class Installer {
                 if (!receipt.has("installedAt")) receipt.put("installedAt", now);
                 receipt.remove(List.of("service", "migrationPending", "pendingPayloadSha256", "legacyInstall4j", "rolledBack"));
                 receipt.put("httpsPort", https); receipt.putNull("pid");
+                receipt.set("programExtensions", Json.MAPPER.valueToTree(layout.extensions()));
                 if (upgrade) {
                     var history = receipt.has("history") && receipt.path("history").isArray() ? receipt.withArray("history") : receipt.putArray("history");
                     history.addObject().put("from", existing.version()).put("to", payload.version()).put("at", now).put("backup", home.relativize(backup).toString());
@@ -343,7 +344,27 @@ final class Installer {
         Json.write(home.resolve(Model.RECEIPT), receipt, false);
         if (!toolsWritten) { NativeProcesses.tools(home, payload, payload.version()); toolsWritten = true; }
     }
-    static void uninstall(Path path) throws Exception {
+    /** Settings and data the uninstaller keeps unless asked to delete them, like install4j, which removes only the files it installed. */
+    static final Set<String> USER_DATA = Set.of("conf", "appdata", "logs", "backups", "custom-lib", "custom-extensions", "server-launcher-lib", Model.RECEIPT);
+    /** The program files to remove: everything except user data, the engine's own extensions and the add-ons this installer added. */
+    static List<Path> programFiles(Path home, JsonNode receipt) throws IOException {
+        List<Path> remove = new ArrayList<>();
+        try (var entries = Files.list(home)) {
+            for (Path entry : entries.sorted().toList()) {
+                String name = entry.getFileName().toString();
+                if (!USER_DATA.contains(name) && !name.equals("extensions")) remove.add(entry);
+            }
+        }
+        Set<String> extensions = new TreeSet<>();
+        receipt.path("programExtensions").forEach(id -> extensions.add(id.asText()));
+        receipt.path("plugins").fieldNames().forEachRemaining(extensions::add);
+        for (String id : extensions) {
+            Path extension = FilesSupport.safeTarget(home, "extensions/" + id);
+            if (Files.exists(extension, LinkOption.NOFOLLOW_LINKS)) remove.add(extension);
+        }
+        return remove;
+    }
+    static void uninstall(Path path, boolean deleteData) throws Exception {
         if (!Privileges.administrator()) throw new IOException("Run the engine's uninstaller with administrator privileges.");
         Path home = Model.canonical(path);
         if (home.getParent() == null || home.equals(Model.userHome().toRealPath())) throw new IOException("Refusing to remove this path.");
@@ -361,8 +382,21 @@ final class Installer {
             Services.stop(home, true);
             if (!Model.engineProcesses(home).isEmpty()) throw new IOException("The engine still runs. Nothing removed.");
             NativeProcesses.removeTools(home);
-            if (Model.WINDOWS) { NativeProcesses.windowsRemove(home); System.out.println("Removal scheduled after the uninstaller exits: " + home); }
-            else { FilesSupport.deleteTree(home); System.out.println("Removed " + home); }
+            List<Path> remove = deleteData ? List.of(home) : programFiles(home, existing.receipt());
+            if (!deleteData) {
+                // A later installation into this folder continues with the kept settings and data.
+                ObjectNode kept = Json.object().put("version", existing.version()).put("archiveSha256", "").put("launcherCommit", "").put("home", home.toString())
+                        .put("rolledBack", true).put("uninstalledAt", Instant.now().toString());
+                Json.write(home.resolve(Model.RECEIPT), kept, false);
+            }
+            String kept = deleteData ? "" : " The configuration, database, logs and backups remain in " + home + ".";
+            if (Model.WINDOWS) { NativeProcesses.windowsRemove(home, remove); System.out.println("Removal scheduled after the uninstaller exits." + kept); }
+            else {
+                for (Path target : remove) FilesSupport.deleteTree(target);
+                Path extensions = home.resolve("extensions");
+                if (!deleteData && Files.isDirectory(extensions, LinkOption.NOFOLLOW_LINKS)) try (var left = Files.list(extensions)) { if (left.findAny().isEmpty()) Files.delete(extensions); }
+                System.out.println("Removed the engine program files." + kept);
+            }
         }
     }
 }
