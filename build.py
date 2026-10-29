@@ -30,6 +30,8 @@ import xml.etree.ElementTree as ET
 import platform as host
 from pathlib import Path
 
+from windows_manifest import require_administrator
+
 ROOT = Path(__file__).resolve().parent
 PAYLOAD = ROOT / "payload"
 REPOSITORY = "OpenIntegrationEngine/engine"
@@ -255,27 +257,6 @@ INIT_HEADER = """# chkconfig:         2345 75 15
 # Short-Description: Open Integration Engine Service
 ### END INIT INFO
 """
-
-
-def require_administrator(exe: Path) -> None:
-    """Give oiecommand.exe install4j's requireAdministrator execution level."""
-    kits = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Windows Kits/10/bin"
-    tools = sorted(kits.glob("10.*/x64/mt.exe")) or sorted(kits.glob("10.*/x86/mt.exe"))
-    if not tools:
-        fail("mt.exe from the Windows SDK is required to mark oiecommand.exe for administrator elevation")
-    mt, manifest = str(tools[-1]), ROOT / "target/oiecommand.manifest"
-    manifest.unlink(missing_ok=True)
-    subprocess.run([mt, "-nologo", f"-inputresource:{exe};#1", f"-out:{manifest}"], check=False)
-    level = '<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>'
-    text = manifest.read_text(encoding="utf-8") if manifest.is_file() else \
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"></assembly>'
-    if "requestedExecutionLevel" in text:
-        text = re.sub(r"<requestedExecutionLevel[^>]*/>", level, text)
-    else:
-        text = text.replace("</assembly>", '<trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security><requestedPrivileges>'
-                            + level + "</requestedPrivileges></security></trustInfo></assembly>")
-    manifest.write_text(text, encoding="utf-8")
-    subprocess.run([mt, "-nologo", "-manifest", str(manifest), f"-outputresource:{exe};#1"], check=True)
 
 
 def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dict:

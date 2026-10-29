@@ -29,6 +29,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from windows_manifest import verify_administrator
+
 WINDOWS = sys.platform == "win32"
 MAC = sys.platform == "darwin"
 EXE = ".exe" if WINDOWS else ""
@@ -151,8 +154,7 @@ def install4j_output(home: Path, service: bool) -> None:
         for entry in ("Open Integration Engine Service.lnk", "Open Integration Engine.lnk"):
             if not (START_MENU / entry).is_file():
                 raise SystemExit(f"Missing Start Menu entry {entry}")
-        if b"requireAdministrator" not in (home / "oiecommand.exe").read_bytes():
-            raise SystemExit("oiecommand.exe does not require administrator elevation")
+        verify_administrator(home / "oiecommand.exe")
         if service and not windows_service_binary().lower().startswith(str(home).lower()):
             raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home}")
     if LINUX:

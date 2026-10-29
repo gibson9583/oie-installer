@@ -76,6 +76,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Test Windows launcher elevation
+        working-directory: installer
+        run: python -m unittest discover -s tests -v
       - name: Prepare NSIS
         if: runner.os == 'Windows'
         shell: pwsh
@@ -117,4 +120,5 @@ jobs:
           path: |
             installer/target/windows-bootstrap.nsi
             installer/payload/manifest.json
+            installer/payload/engine/oiecommand.exe
           if-no-files-found: ignore
