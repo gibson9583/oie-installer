@@ -245,13 +245,13 @@ Windows ARM64 builds use an x64 JDK for the JavaFX wizard. Pass an ARM64 JDK thr
 
 ### Validation
 
-Run the launcher manifest regression tests:
+Run the installer support regression tests:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-On Windows, these tests include a round trip through the Windows SDK using the installed JDK's launcher. Other platforms skip that native test.
+Windows tests check the installed JDK's launcher through the Windows SDK. They also check application registration using temporary registry keys. Other platforms skip these native tests.
 
 After building the installer, run the filesystem cleanup checks:
 

@@ -127,6 +127,44 @@ def web_client(port: int) -> bool:
 
 LINUX = sys.platform.startswith("linux")
 WINDOWS_SERVICE = "Open Integration Engine Service"
+WINDOWS_APPLICATION_ID = "4145-9206-7630-8076"
+
+
+def windows_registration(home: Path, version: str | None, *, hive=None, bases=None) -> None:
+    """Check the current application entry, or its absence after uninstall."""
+    import winreg
+
+    hive = winreg.HKEY_LOCAL_MACHINE if hive is None else hive
+    bases = bases or (r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                      r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+    entries = []
+    for base in bases:
+        try:
+            key = winreg.OpenKey(hive, base + "\\" + WINDOWS_APPLICATION_ID, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+        except FileNotFoundError:
+            continue
+        with key:
+            values = {}
+            for field in ("DisplayName", "DisplayVersion", "Publisher", "URLInfoAbout", "InstallLocation", "UninstallString", "VersionMajor", "VersionMinor"):
+                try:
+                    values[field] = winreg.QueryValueEx(key, field)[0]
+                except FileNotFoundError:
+                    values[field] = None
+            entries.append({"base": base, "values": values})
+    print("Apps & Features: " + json.dumps(entries), flush=True)
+    if version is None:
+        if entries:
+            raise SystemExit("Apps & Features registration remains after uninstall")
+        return
+    if len(entries) != 1 or entries[0]["base"] != bases[0]:
+        raise SystemExit("Expected one native Apps & Features registration")
+    major, minor = version.split(".")[:2]
+    expected = {"DisplayName": "Open Integration Engine " + version, "DisplayVersion": version,
+                "Publisher": "Open Integration Engine Project", "URLInfoAbout": "https://openintegrationengine.com",
+                "InstallLocation": str(home), "UninstallString": f'"{home / "uninstall.exe"}"',
+                "VersionMajor": int(major), "VersionMinor": int(minor)}
+    if entries[0]["values"] != expected:
+        raise SystemExit("Apps & Features registration does not describe the installed engine")
 
 
 def service_definition() -> Path:
@@ -155,6 +193,8 @@ def install4j_output(home: Path, service: bool) -> None:
             if not (START_MENU / entry).is_file():
                 raise SystemExit(f"Missing Start Menu entry {entry}")
         verify_administrator(home / "oiecommand.exe")
+        version = json.loads((installer()[1] / "payload/manifest.json").read_text(encoding="utf-8"))["version"]
+        windows_registration(home, version)
         if service and not windows_service_binary().lower().startswith(str(home).lower()):
             raise SystemExit(f"The {WINDOWS_SERVICE} does not run {home}")
     if LINUX:
@@ -243,6 +283,8 @@ def smoke(service: bool, http: int, https: int) -> None:
                     print(error, flush=True)
     if WINDOWS and any(START_MENU.glob("*.lnk")):
         raise SystemExit("Start Menu entries remain after uninstall")
+    if WINDOWS:
+        windows_registration(home, None)
     if LINUX and any(Path("/usr/local/bin", name).is_symlink() for name in ("oieservice", "oiecommand")):
         raise SystemExit("/usr/local/bin links remain after uninstall")
     if not WINDOWS and service_definition().exists():
@@ -372,6 +414,8 @@ def upgrade(http: int, https: int) -> None:
                     print(error, flush=True)
             elif home.exists():
                 shutil.rmtree(home, ignore_errors=True)
+    if WINDOWS:
+        windows_registration(home, None)
     print("== Upgrade pass complete", flush=True)
 
 
@@ -470,12 +514,15 @@ def legacy_installer(http: int, https: int) -> None:
             if "smoke.marker = kept" not in properties.read_text(encoding="latin-1"):
                 raise SystemExit("The upgrade did not keep conf/mirth.properties")
             if WINDOWS:
-                remaining = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
-                    f"Get-ChildItem HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall,HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall | "
-                    f"Get-ItemProperty | Where-Object {{ $_.UninstallString -like '*{home}\\uninstall.exe*' }} | Measure-Object | Select-Object -ExpandProperty Count"],
-                    capture_output=True, text=True).stdout.strip().splitlines()
-                if remaining and remaining[-1] != "0":
-                    raise SystemExit("The install4j Apps & Features entry remains")
+                # The current entry uses the same application ID and uninstaller path.
+                # install4j_output checked that it describes the new engine. The
+                # retired entry must also be preserved in the upgrade backup.
+                backups = list(home.glob("backups/*/previous-uninstall-registration.json"))
+                if len(backups) != 1:
+                    raise SystemExit("Missing backup of the previous Apps & Features registration")
+                previous = json.loads(backups[0].read_text(encoding="utf-8-sig"))
+                if not any(entry["values"].get("DisplayName") == "Open Integration Engine " + PREVIOUS for entry in previous):
+                    raise SystemExit("The Apps & Features backup does not describe the previous engine")
             service_launcher = launcher(home, "oieservice")
             run([service_launcher, "status"], expect=0)
             wait(lambda: web_client(https), "the OIE Web Client", seconds=180)
@@ -499,6 +546,8 @@ def legacy_installer(http: int, https: int) -> None:
                     if not failed:
                         raise
                     print(error, flush=True)
+    if WINDOWS:
+        windows_registration(home, None)
     print("== Install4j installer upgrade pass complete", flush=True)
 
 
@@ -540,6 +589,8 @@ def quiet_no_jre() -> None:
                 if not failed:
                     raise
                 print(error, flush=True)
+    if WINDOWS:
+        windows_registration(home, None)
     print("== No-JRE pass complete", flush=True)
 
 
