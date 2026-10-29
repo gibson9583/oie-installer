@@ -100,6 +100,10 @@ jobs:
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
+      - name: Test Windows service operations
+        if: runner.os == 'Windows'
+        working-directory: installer
+        run: python -u ci/check_windows_services.py
       - name: Install, operate and uninstall the engine
         working-directory: installer
         run: |
@@ -125,3 +129,14 @@ jobs:
             installer/payload/manifest.json
             installer/payload/engine/oiecommand.exe
           if-no-files-found: ignore
+      - name: Preserve Windows service checks
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: service-checks-${{ matrix.id }}
+          path: |
+            installer/ci/performance-windows-services.json
+            installer/ci/performance-windows-services.log
+            installer/ci/provenance/**
+          if-no-files-found: ignore
+          retention-days: 14

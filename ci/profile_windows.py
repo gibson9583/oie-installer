@@ -139,7 +139,8 @@ def profile(args):
         "readOnly": True, "timeoutSeconds": args.timeout, "budgetSeconds": args.budget, "samples": args.samples,
         "environment": {key: os.environ.get(key) for key in (
             "JAVA_HOME", "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
-            "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS", "OS", "RUNNER_ARCH", "RUNNER_OS")},
+            "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS", "OS", "RUNNER_ARCH", "RUNNER_OS",
+            "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_WORKFLOW")},
         "javaExecutable": java, "javaPeMachine": pe_machine(java), "measurements": [],
     }
     checkpoint(output, document)
@@ -173,6 +174,13 @@ def profile(args):
                 "service_controller": "Add-Type -AssemblyName System.ServiceProcess; $s=[System.ServiceProcess.ServiceController]::GetServices(); "
                                       "[bool]($s|Where-Object ServiceName -eq '" + SERVICE + "'); "
                                       "$s|ForEach-Object {$_.Dispose()}",
+                "registry_direct": "$ErrorActionPreference='Stop'; "
+                                   "[bool][Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\" + SERVICE + "','ImagePath',$null)",
+                "controller_direct": "$ErrorActionPreference='Stop'; "
+                                     "[void][Reflection.Assembly]::Load('System.ServiceProcess, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'); "
+                                     "$s=[System.ServiceProcess.ServiceController]::new(); $s.ServiceName='" + SERVICE + "'; "
+                                     "try{$s.Status.ToString()}catch{$e=$_.Exception; while($e.InnerException){$e=$e.InnerException}; "
+                                     "if($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 1060){'absent'}else{throw}}finally{$s.Dispose()}",
             }
             if index > 0:
                 scripts = {key: value for key, value in scripts.items() if key in ("empty", "metadata", "cim_service")}

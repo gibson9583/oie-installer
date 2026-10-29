@@ -27,6 +27,9 @@ jobs:
         shell: bash
         # The probe uses JavaFX API classes only; Windows JavaFX 21 natives are x64.
         run: python -c "import pathlib, subprocess; subprocess.run([str(pathlib.Path('mvnw.cmd').resolve()), '-B', '-Dmaven.test.skip=true', '-Djavafx.platform=win', 'package'], check=True)"
+      - name: Check Windows service operations
+        shell: bash
+        run: python -u ci/check_windows_services.py
       - name: Profile Windows operations
         shell: bash
         run: python -u ci/profile_windows.py
@@ -35,5 +38,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-performance-${{ runner.arch }}
-          path: ci/performance*.json
+          path: |
+            ci/performance*.json
+            ci/performance*.log
+            ci/provenance/**
           if-no-files-found: error

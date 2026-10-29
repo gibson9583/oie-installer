@@ -49,7 +49,13 @@ final class Services {
             record.put("kind", "launchd-system").put("name", LAUNCHD_LABEL).put("file", LAUNCHD_FILE.toString()).put("program", program)
                     .put("start", "sudo launchctl bootstrap system " + LAUNCHD_FILE).put("stop", "sudo launchctl bootout system/" + LAUNCHD_LABEL);
         } else if (Model.WINDOWS) {
-            String script = "$s=Get-CimInstance Win32_Service -Filter \"Name='" + WINDOWS_NAME + "'\"; if($s){$p=$s.PathName.Trim(); if($p.StartsWith('\"')){$p.Split('\"')[1]}else{($p -split '\\s+')[0]}}";
+            // Read the same ImagePath without importing the CIM management module.
+            // HKLM\SYSTEM is shared between Windows architectures, including the x64 wizard on ARM64.
+            String script = """
+                $ErrorActionPreference='Stop'
+                $p=[Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\%s','ImagePath',$null)
+                if($null -ne $p){$p=([string]$p).Trim(); if($p.StartsWith('"')){$p.Split('"')[1]}else{($p -split '\\s+')[0]}}
+                """.formatted(WINDOWS_NAME);
             String output = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
             String program = output.lines().map(String::strip).filter(line -> !line.isEmpty()).reduce((first, last) -> last).orElse("");
             if (program.isEmpty()) return null;
@@ -151,14 +157,32 @@ final class Services {
         String owner = service ? "root" : Privileges.invokingUser();
         Model.command("chown", "-R", owner, home.toString());
     }
+    /** Use the framework service API directly: management-module imports are costly on ARM64. */
+    private static String windowsService(String action) throws IOException, InterruptedException {
+        String script = """
+            $ErrorActionPreference='Stop'
+            [void][Reflection.Assembly]::Load('System.ServiceProcess, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a')
+            $s=[System.ServiceProcess.ServiceController]::new()
+            $s.ServiceName='%s'
+            try{%s}catch{
+              $e=$_.Exception; while($e.InnerException){$e=$e.InnerException}
+              if($e -isnot [ComponentModel.Win32Exception] -or $e.NativeErrorCode -ne 1060){throw}
+            }finally{$s.Dispose()}
+            """.formatted(WINDOWS_NAME, action);
+        return Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+    }
     static void stop(Path home, boolean remove) throws Exception {
         ObjectNode record = detect(home);
         if (record == null) return;
         String kind = record.path("kind").asText();
         switch (kind) {
             case "windows" -> {
-                String script = "$ErrorActionPreference='Stop'; $s=Get-Service -Name '" + WINDOWS_NAME + "' -ErrorAction SilentlyContinue; if($s){if($s.Status -ne 'Stopped'){ $s.Stop(); $s.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(65)) }}";
-                Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+                windowsService("""
+                    if($s.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped){
+                      if($s.Status -ne [System.ServiceProcess.ServiceControllerStatus]::StopPending){$s.Stop()}
+                      $s.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(65))
+                    }
+                    """);
                 if (remove) Model.command("sc.exe", "delete", WINDOWS_NAME);
             }
             case "launchd-system" -> {
@@ -198,7 +222,7 @@ final class Services {
         if (record == null) return false;
         try {
             return switch (record.path("kind").asText()) {
-                case "windows" -> Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded("(Get-Service -Name '" + WINDOWS_NAME + "' -ErrorAction SilentlyContinue).Status")).equalsIgnoreCase("Running");
+                case "windows" -> windowsService("$s.Status.ToString()").equalsIgnoreCase("Running");
                 case "launchd-system" -> Model.command("launchctl", "print", "system/" + LAUNCHD_LABEL).contains("state = running");
                 case "systemd-system" -> Model.command("systemctl", "is-active", UNIT).equals("active");
                 default -> !Model.engineProcesses(home).isEmpty();
