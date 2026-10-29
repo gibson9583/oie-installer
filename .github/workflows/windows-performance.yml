@@ -25,7 +25,8 @@ jobs:
           python-version: '3.12'
       - name: Compile installer classes
         shell: bash
-        run: python -c "import pathlib, subprocess; subprocess.run([str(pathlib.Path('mvnw.cmd').resolve()), '-B', '-Dmaven.test.skip=true', 'package'], check=True)"
+        # The probe uses JavaFX API classes only; Windows JavaFX 21 natives are x64.
+        run: python -c "import pathlib, subprocess; subprocess.run([str(pathlib.Path('mvnw.cmd').resolve()), '-B', '-Dmaven.test.skip=true', '-Djavafx.platform=win', 'package'], check=True)"
       - name: Profile Windows operations
         shell: bash
         run: python -u ci/profile_windows.py
