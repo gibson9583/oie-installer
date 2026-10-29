@@ -539,7 +539,12 @@ fi
 dir=$(mktemp -d "${{TMPDIR:-/var/tmp}}/oie-installer.XXXXXX") || exit 1
 trap 'rm -rf "$dir"' EXIT HUP INT TERM
 tail -n +"$skip" "$self" | tar -xzf - -C "$dir" || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
-"$dir/{APP_NAME}/bin/{APP_NAME}" "$@"
+# Use the bundled java command directly: the Linux jpackage app launcher can
+# crash before Main runs. Keep the wizard and unattended modes on the same path.
+app="$dir/{APP_NAME}"
+"$app/lib/runtime/bin/java" --enable-native-access=ALL-UNNAMED -Dfile.encoding=UTF-8 \
+  -cp "$app/lib/app/oie-installer-jpackage.jar:$app/lib/app/lib/*" \
+  org.openintegrationengine.installer.Main "$@"
 exit $?
 __OIE_INSTALLER_PAYLOAD__
 """

@@ -18,7 +18,8 @@ public final class SessionStartEngineCheck {
     private static Path java() { return Path.of(System.getProperty("java.home"), "bin/java"); }
     private static void helper(String[] args) throws Exception {
         Path job = Path.of(args[1]), home = Path.of(args[2]);
-        Files.writeString(job.resolve("helper.pid"), Long.toString(ProcessHandle.current().pid()));
+        Files.writeString(job.resolve("helper.pid.pending"), Long.toString(ProcessHandle.current().pid()));
+        Files.move(job.resolve("helper.pid.pending"), job.resolve("helper.pid"), StandardCopyOption.ATOMIC_MOVE);
         long pid = SessionStart.await(job, home, new SessionStart.Caller(Long.parseLong(args[3]), Long.parseLong(args[4])), item -> {
             try { Files.writeString(job.resolve("events.jsonl"), Json.MAPPER.writeValueAsString(item) + "\n", StandardOpenOption.APPEND); }
             catch (IOException e) { throw new java.io.UncheckedIOException(e); }

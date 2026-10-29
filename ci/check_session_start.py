@@ -17,6 +17,7 @@ def check(engine: bool) -> None:
     classpath = os.pathsep.join([str(ROOT / "target/classes"), str(ROOT / "target/lib/*")])
     evidence = ROOT / "target/session-start-check"
     evidence.mkdir(parents=True, exist_ok=True)
+    evidence = Path(tempfile.mkdtemp(prefix="run-", dir=evidence))
     with tempfile.TemporaryDirectory(prefix="oie-session-classes-") as work:
         sources = [str(ROOT / "ci/SessionStartCheck.java")]
         if engine:
