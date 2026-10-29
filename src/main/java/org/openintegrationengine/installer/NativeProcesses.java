@@ -134,20 +134,24 @@ final class NativeProcesses {
             $ErrorActionPreference='Stop'
             $homeDir=%s
             $ownKey=%s
-            $matches=@()
+            $found=@()
             foreach($base in @('HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')){
               foreach($key in Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue){
                 $p=Get-ItemProperty -LiteralPath $key.PSPath
                 $cmd=[string]$p.UninstallString
                 $exe=if($cmd.StartsWith('"')){($cmd -split '"')[1]}else{($cmd -split '\\s+')[0]}
                 if(($p.InstallLocation -and ([string]$p.InstallLocation).TrimEnd('\\') -ieq $homeDir.TrimEnd('\\')) -or $exe -ieq ($homeDir+'\\uninstall.exe')){
-                  if($key.Name -ne $ownKey.Replace('HKLM:','HKEY_LOCAL_MACHINE')){$matches+=@{path=$key.PSPath;values=$p}}
+                  if($key.Name -ne $ownKey.Replace('HKLM:','HKEY_LOCAL_MACHINE')){
+                    # Plain registry values only: the provider object graph makes ConvertTo-Json run for minutes.
+                    $values=[ordered]@{}; foreach($name in $key.GetValueNames()){ $values[$name]=[string]$key.GetValue($name) }
+                    $found+=[pscustomobject]@{path=$key.Name;values=$values}
+                  }
                 }
               }
             }
-            if($matches.Count -gt 0){
-              $matches | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath %s -Encoding UTF8
-              foreach($item in $matches){Remove-Item -LiteralPath $item.path -Recurse -Force}
+            if($found.Count -gt 0){
+              ConvertTo-Json -InputObject @($found) -Depth 4 | Set-Content -LiteralPath %s -Encoding UTF8
+              foreach($item in $found){Remove-Item -LiteralPath ('Registry::'+$item.path) -Recurse -Force}
             }
             """.formatted(Privileges.powershell(home.toString()), Privileges.powershell(registryKey(home)), Privileges.powershell(backup.resolve("previous-uninstall-registration.json").toString()));
         Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));

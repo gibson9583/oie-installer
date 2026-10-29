@@ -317,6 +317,8 @@ def legacy_service(home: Path) -> str:
         plist = Path("/Library/LaunchDaemons/com.oie.oieservice.plist")
         return "com.oie.oieservice" if plist.is_file() and str(home) in plist.read_text(errors="replace") else ""
     for unit in sorted(Path("/etc/systemd/system").glob("*.service")):
+        if unit.name.startswith("org.openintegrationengine.engine."):
+            continue  # The new installer's own unit also runs <home>/oieservice.
         if unit.is_file() and not unit.is_symlink() and f"{home}/oieservice" in unit.read_text(errors="replace"):
             return unit.name
     return ""
