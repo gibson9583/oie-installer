@@ -6,6 +6,7 @@ import java.io.*;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 /** Native boot-time services, with migration of install4j and earlier user services. */
@@ -109,7 +110,7 @@ final class Services {
     }
     static void verifyRecord(Path home, JsonNode record) throws Exception {
         String kind = record.path("kind").asText(), name = record.path("name").asText(); Path expected;
-        if (kind.equals("install4j-launchd") || kind.equals("install4j-windows")) {
+        if (kind.startsWith("install4j-")) {
             ObjectNode detected = legacy(home);
             if (detected == null || !detected.path("name").asText().equals(name)) throw new IOException("The legacy service no longer belongs to this engine.");
             return;
@@ -149,7 +150,7 @@ final class Services {
         }
         if (remove) {
             if (record.hasNonNull("file")) Files.deleteIfExists(Path.of(record.path("file").asText()));
-            if (kind.startsWith("systemd")) Model.command("systemctl", "daemon-reload");
+            if (kind.contains("systemd")) Model.command("systemctl", "daemon-reload");
         }
     }
     static void start(Path home, JsonNode record) throws Exception {
@@ -199,6 +200,14 @@ final class Services {
                     + "; Get-CimInstance Win32_Service | Where-Object { $p=$_.PathName.Trim(); if($p.StartsWith('\"')){$p=$p.Split('\"')[1]}else{$p=($p -split '\\s+')[0]}; $p -ieq $target } | Select-Object -First 1 -ExpandProperty Name";
             String name = Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
             if (!name.isEmpty()) return Json.object().put("kind", "install4j-windows").put("name", name);
+        } else if (Files.isDirectory(Path.of("/etc/systemd/system"))) {
+            // install4j writes /etc/systemd/system/<launcher>.service, which runs <engine>/oieservice.
+            Pattern exec = Pattern.compile("(?m)^\\s*Exec(Start|Stop)=\\s*[-@+!]*\"?" + Pattern.quote(home.resolve("oieservice").toString()) + "\"?(\\s|$)");
+            try (var units = Files.list(Path.of("/etc/systemd/system"))) {
+                for (Path unit : units.filter(p -> p.getFileName().toString().endsWith(".service") && !p.getFileName().toString().startsWith("org.openintegrationengine.engine.")).sorted().toList())
+                    if (Files.isRegularFile(unit, LinkOption.NOFOLLOW_LINKS) && exec.matcher(Files.readString(unit, java.nio.charset.StandardCharsets.ISO_8859_1)).find())
+                        return Json.object().put("kind", "install4j-systemd").put("name", unit.getFileName().toString()).put("file", unit.toString());
+            }
         }
         return null;
     }

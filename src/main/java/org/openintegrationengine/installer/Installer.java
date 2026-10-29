@@ -114,7 +114,7 @@ final class Installer {
             if (Files.isRegularFile(home.resolve(Model.RECEIPT), LinkOption.NOFOLLOW_LINKS)) Files.copy(home.resolve(Model.RECEIPT), backup.resolve(Model.RECEIPT));
             if (existing.service() != null && existing.service().hasNonNull("file")) {
                 Path serviceFile = Path.of(existing.service().path("file").asText());
-                if (Files.isRegularFile(serviceFile, LinkOption.NOFOLLOW_LINKS)) Files.copy(serviceFile, backup.resolve("previous-service" + (Model.WINDOWS ? ".xml" : ".plist")));
+                if (Files.isRegularFile(serviceFile, LinkOption.NOFOLLOW_LINKS)) Files.copy(serviceFile, backup.resolve("previous-service" + (Model.WINDOWS ? ".xml" : Model.MAC ? ".plist" : ".service")));
             }
             NativeProcesses.retireLegacyRegistration(home, backup);
             Services.stop(home, existing.service(), true);

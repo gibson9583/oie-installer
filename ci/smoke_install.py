@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import plistlib
 import hashlib
 import re
 import secrets
@@ -47,12 +49,12 @@ def installer() -> tuple[Path, Path]:
     return folder / "runtime/bin/java", folder / "app"
 
 
-def run(command: list, expect: int | None = 0, timeout: int = 900) -> int:
+def run(command: list, expect: int | None = 0, timeout: int = 900, env: dict | None = None) -> int:
     print("+ " + " ".join(str(part) for part in command), flush=True)
     # A file, not a pipe: a detached engine must not hold the output open.
     with tempfile.TemporaryFile() as output:
         code = subprocess.run([str(part) for part in command], stdin=subprocess.DEVNULL, stdout=output,
-                              stderr=subprocess.STDOUT, timeout=timeout).returncode
+                              stderr=subprocess.STDOUT, timeout=timeout, env=env).returncode
         output.seek(0)
         data = output.read()
         try:
@@ -193,10 +195,18 @@ def smoke(service: bool, http: int, https: int) -> None:
     print(f"== {'Service' if service else 'Process'} pass complete", flush=True)
 
 
-def previous_release(work: Path) -> Path:
-    """Download and verify the previous install4j archive for this platform."""
-    platform = ("windows-arm64" if os.environ.get("PROCESSOR_ARCHITECTURE", "").upper() == "ARM64" else "windows-x64") if WINDOWS else "unix"
-    name = f"oie_{platform}_{PREVIOUS.replace('.', '_')}" + (".zip" if WINDOWS else ".tar.gz")
+def previous_release(work: Path, installer_media: bool = False) -> Path:
+    """Download and verify the previous install4j archive, or its installer, for this platform."""
+    version = PREVIOUS.replace(".", "_")
+    arm = (os.environ.get("PROCESSOR_ARCHITECTURE", "") if WINDOWS else platform.machine()).lower() in ("arm64", "aarch64")
+    if not installer_media:
+        name = f"oie_{'windows-arm64' if arm else 'windows-x64'}_{version}.zip" if WINDOWS else f"oie_unix_{version}.tar.gz"
+    elif WINDOWS:
+        name = f"oie_{'windows-arm64' if arm else 'windows-x64'}_{version}.exe"
+    elif MAC:
+        name = f"oie_macos_{version}-{'aarch' if arm else 'x86'}.dmg"
+    else:
+        name = f"oie_unix_{version}.sh"
     with urllib.request.urlopen(f"{RELEASES}/v{PREVIOUS}/sha256sums", timeout=60) as response:
         sums = dict(reversed(line.split(None, 1)) for line in response.read().decode().splitlines() if line.strip())
     archive = work / name
@@ -295,12 +305,138 @@ def upgrade(http: int, https: int) -> None:
     print("== Upgrade pass complete", flush=True)
 
 
+def legacy_service(home: Path) -> str:
+    """The service the install4j installer registered for this engine, or an empty string."""
+    if WINDOWS:
+        script = (f"Get-CimInstance Win32_Service | Where-Object {{ $_.PathName -like '*{home}\\oieservice.exe*' }} | "
+                  "Select-Object -First 1 -ExpandProperty Name")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", "$ProgressPreference='SilentlyContinue'; " + script],
+                                capture_output=True, text=True)
+        return result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if MAC:
+        plist = Path("/Library/LaunchDaemons/com.oie.oieservice.plist")
+        return "com.oie.oieservice" if plist.is_file() and str(home) in plist.read_text(errors="replace") else ""
+    for unit in sorted(Path("/etc/systemd/system").glob("*.service")):
+        if unit.is_file() and not unit.is_symlink() and f"{home}/oieservice" in unit.read_text(errors="replace"):
+            return unit.name
+    return ""
+
+
+def control_legacy(name: str, action: str) -> None:
+    if WINDOWS:
+        verb = "Stop-Service" if action == "stop" else "Start-Service"
+        run(["powershell.exe", "-NoProfile", "-Command", f"$ProgressPreference='SilentlyContinue'; {verb} -Name '{name}'"], expect=None)
+    elif MAC:
+        plist = f"/Library/LaunchDaemons/{name}.plist"
+        if action == "stop":
+            run(["launchctl", "bootout", f"system/{name}"], expect=None)
+        else:
+            run(["launchctl", "bootstrap", "system", plist], expect=None)
+            run(["launchctl", "kickstart", f"system/{name}"], expect=None)
+    else:
+        run(["systemctl", action, name], expect=None)
+
+
+def legacy_installer(http: int, https: int) -> None:
+    """Upgrade an engine installed by the previous install4j installer, with its service."""
+    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/Applications") if MAC else Path("/opt")
+    home = base / f"oie-smoke-legacy-{secrets.token_hex(3)}"
+    java, app = installer()
+    classpath = os.pathsep.join([str(app / "oie-installer-jpackage.jar"), str(app / "lib" / "*")])
+    with tempfile.TemporaryDirectory() as work:
+        work = Path(work)
+        failed = False
+        try:
+            print(f"== Install4j {PREVIOUS} installer into {home}", flush=True)
+            media = previous_release(work, installer_media=True)
+            env = dict(os.environ, INSTALL4J_JAVA_HOME=str(engine_java_home()))
+            if WINDOWS:
+                run([media, "-q", "-dir", home], env=env)
+            elif MAC:
+                mount = work / "mounted"
+                mount.mkdir()
+                run(["hdiutil", "attach", media, "-nobrowse", "-readonly", "-mountpoint", mount])
+                try:
+                    bundle = next(mount.glob("*.app"))
+                    executable = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())["CFBundleExecutable"]
+                    run([bundle / "Contents/MacOS" / executable, "-q", "-dir", home], env=env)
+                finally:
+                    run(["hdiutil", "detach", mount], expect=None)
+            else:
+                run(["sh", media, "-q", "-dir", home], env=env)
+            name = legacy_service(home)
+            print(f"install4j service: {name or '(none)'}", flush=True)
+            if not name:
+                raise SystemExit("The install4j installer registered no service for the engine")
+
+            # Restart the install4j service on free ports so that it creates its database.
+            control_legacy(name, "stop")
+            properties = home / "conf/mirth.properties"
+            text = re.sub(r"(?m)^http\.port\s*=.*$", f"http.port = {http}", properties.read_text(encoding="latin-1"))
+            text = re.sub(r"(?m)^https\.port\s*=.*$", f"https.port = {https}", text)
+            properties.write_text(text + "\nsmoke.marker = kept\n", encoding="latin-1")
+            log = home / "logs/mirth.log"
+            offset = log.stat().st_size if log.is_file() else 0
+            control_legacy(name, "start")
+            def started() -> bool:
+                if not log.is_file():
+                    return False
+                with open(log, "rb") as handle:
+                    handle.seek(offset if log.stat().st_size >= offset else 0)
+                    text = handle.read().decode("utf-8", "replace")
+                return f"Open Integration Engine {PREVIOUS} " in text and "server successfully started" in text
+            wait(started, f"the {PREVIOUS} install4j service")
+
+            plan = work / "plan.json"
+            plan.write_text(json.dumps({"installDir": str(home), "javaCmd": "@bundled", "service": True}))
+            print(f"== Upgrade the running install4j {PREVIOUS} service", flush=True)
+            run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
+            if legacy_service(home):
+                raise SystemExit("The install4j service is still registered")
+            if (home / ".install4j").exists():
+                raise SystemExit("The install4j runtime was not moved into the backup")
+            if "smoke.marker = kept" not in properties.read_text(encoding="latin-1"):
+                raise SystemExit("The upgrade did not keep conf/mirth.properties")
+            if WINDOWS:
+                remaining = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    f"Get-ChildItem HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall,HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall | "
+                    f"Get-ItemProperty | Where-Object {{ $_.UninstallString -like '*{home}\\uninstall.exe*' }} | Measure-Object | Select-Object -ExpandProperty Count"],
+                    capture_output=True, text=True).stdout.strip().splitlines()
+                if remaining and remaining[-1] != "0":
+                    raise SystemExit("The install4j Apps & Features entry remains")
+            service_launcher = launcher(home, "oieservice")
+            run([service_launcher, "status"], expect=0)
+            wait(lambda: web_client(https), "the OIE Web Client", seconds=180)
+            script = work / "cli.txt"
+            script.write_text("status\n")
+            run([launcher(home, "oiecommand"), "-a", f"https://localhost:{https}", "-u", "admin", "-p", "admin", "-s", script], timeout=180)
+        except BaseException:
+            failed = True
+            if home.exists():
+                diagnostics(home)
+            if sys.platform.startswith("linux"):
+                run(["sh", "-c", "ls -la /etc/systemd/system /etc/init.d | grep -i oie; grep -rl oie /etc/systemd/system 2>/dev/null"], expect=None)
+            raise
+        finally:
+            if launcher(home, "oie-uninstall").is_file() and (home / "oie-installer.json").is_file():
+                print(f"== Uninstall {home}", flush=True)
+                run([launcher(home, "oie-uninstall"), "--yes"], expect=None)
+                try:
+                    wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+                except SystemExit as error:
+                    if not failed:
+                        raise
+                    print(error, flush=True)
+    print("== Install4j installer upgrade pass complete", flush=True)
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     os.environ["OIE_INSTALLER_DEBUG"] = "1"
     smoke(True, 18080, 18443)
     smoke(False, 28080, 28443)
     upgrade(38080, 38443)
+    legacy_installer(48080, 48443)
     return 0
 
 
