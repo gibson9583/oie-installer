@@ -23,8 +23,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
-          - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
+          # macOS runners are disabled to save Actions minutes; uncomment to build the DMGs.
+          # - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
+          # - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
           - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
           # JavaFX 21 has no Windows ARM64 build: the wizard runs as x64; the engine runtime is native ARM64.
           - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-architecture: x64 }
