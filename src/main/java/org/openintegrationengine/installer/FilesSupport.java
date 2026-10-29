@@ -35,11 +35,28 @@ final class FilesSupport {
     static void deleteTree(Path path) throws IOException {
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
         Files.walkFileTree(path, new SimpleFileVisitor<>() {
-            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException { Files.delete(file); return FileVisitResult.CONTINUE; }
+            @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException { deleteFile(file); return FileVisitResult.CONTINUE; }
             @Override public FileVisitResult postVisitDirectory(Path dir, IOException error) throws IOException {
-                if (error != null) throw error; Files.delete(dir); return FileVisitResult.CONTINUE;
+                if (error != null) throw error; deleteFile(dir); return FileVisitResult.CONTINUE;
             }
         });
+    }
+    private static void deleteFile(Path path) throws IOException {
+        try { Files.delete(path); }
+        catch (AccessDeniedException denied) {
+            if (!Model.WINDOWS) throw denied;
+            // jpackage launchers can retain the DOS read-only flag after copying.
+            // Clear only that flag; an ACL or a running process must still block deletion.
+            DosFileAttributeView attributes = Files.getFileAttributeView(path, DosFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            if (attributes == null || !attributes.readAttributes().isReadOnly()) throw denied;
+            attributes.setReadOnly(false);
+            try { Files.delete(path); }
+            catch (IOException failure) {
+                try { attributes.setReadOnly(true); } catch (IOException restore) { failure.addSuppressed(restore); }
+                failure.addSuppressed(denied);
+                throw failure;
+            }
+        }
     }
     static long size(Path path) throws IOException {
         if (!Files.exists(path)) return 0;

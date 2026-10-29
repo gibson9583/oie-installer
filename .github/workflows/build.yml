@@ -97,6 +97,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           ENGINE_JDK: ${{ steps.engine-jdk.outputs.path }}
         run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}"
+      - name: Test file cleanup
+        working-directory: installer
+        run: python ci/check_file_cleanup.py
       - name: Install, operate and uninstall the engine
         working-directory: installer
         run: |
