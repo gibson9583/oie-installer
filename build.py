@@ -469,6 +469,7 @@ def windows_bootstrap(image: Path, destination: Path, version: str) -> None:
         return value.replace("$", "$$").replace('"', '$\\"')
     script.write_text(f'''
 Unicode true
+!include FileFunc.nsh
 Name "Open Integration Engine Installer"
 OutFile "{nsis(str(destination))}"
 Icon "{nsis(str(ROOT / 'packaging/icon.ico'))}"
@@ -484,7 +485,8 @@ Section
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\\{APP_NAME}"
   File /r "{nsis(str(image))}\\*.*"
-  ExecWait '"$PLUGINSDIR\\{APP_NAME}\\{APP_NAME}.exe"' $0
+  ${{GetParameters}} $R0
+  ExecWait '"$PLUGINSDIR\\{APP_NAME}\\{APP_NAME}.exe" $R0' $0
   SetErrorLevel $0
 SectionEnd
 ''', encoding="utf-8")
@@ -505,28 +507,47 @@ def media_name(version: str, bundled_java: bool) -> str:
 def unix_installer(image: Path, destination: Path) -> None:
     """A self-extracting shell installer, like install4j's oie_unix_*.sh: run it as root, or with -q -dir <folder>."""
     arch = "aarch64" if machine() == "arm64" else "x86_64"
+    payload = ROOT / "target/unix-installer.tar.gz"
+    with tarfile.open(payload, "w:gz") as archive:
+        archive.add(image, arcname=image.name)
+    digest = sha256_file(payload)
     header = f"""#!/bin/sh
 # Open Integration Engine Installer
 case "$(uname -m)" in
   {arch}{"|arm64" if arch == "aarch64" else "|amd64"}) ;;
   *) echo "This installer is for {arch} Linux. Use the oie_unix installer for $(uname -m)." >&2; exit 1 ;;
 esac
+self=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 if [ "$(id -u)" != 0 ]; then
+  keep="DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE XDG_CONFIG_HOME XDG_CONFIG_DIRS XDG_DATA_HOME XDG_DATA_DIRS"
+  if [ ! -t 0 ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && command -v pkexec >/dev/null 2>&1; then
+    # Started from a file manager: no terminal for sudo, so ask with the desktop's administrator prompt.
+    exec pkexec env SUDO_UID="$(id -u)" SUDO_GID="$(id -g)" SUDO_USER="$(id -un)" \\
+      DISPLAY="$DISPLAY" XAUTHORITY="${{XAUTHORITY:-$HOME/.Xauthority}}" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \\
+      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" XDG_CURRENT_DESKTOP="$XDG_CURRENT_DESKTOP" XDG_SESSION_TYPE="$XDG_SESSION_TYPE" \\
+      sh "$self" "$@"
+  fi
   command -v sudo >/dev/null 2>&1 || {{ echo "Run this installer as root." >&2; exit 1; }}
-  exec sudo --preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,XDG_CURRENT_DESKTOP,DESKTOP_SESSION,XDG_SESSION_TYPE,XDG_CONFIG_HOME,XDG_CONFIG_DIRS,XDG_DATA_HOME,XDG_DATA_DIRS sh "$0" "$@"
+  exec sudo --preserve-env=$(echo $keep | tr ' ' ',') sh "$self" "$@"
 fi
-dir=$(mktemp -d "${{TMPDIR:-/tmp}}/oie-installer.XXXXXX") || exit 1
+skip=$(awk '/^__OIE_INSTALLER_PAYLOAD__$/ {{ print NR + 1; exit }}' "$self")
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(tail -n +"$skip" "$self" | sha256sum | cut -d' ' -f1)
+  [ "$actual" = "{digest}" ] || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
+fi
+# /var/tmp is on disk; /tmp is often a small memory file system.
+dir=$(mktemp -d "${{TMPDIR:-/var/tmp}}/oie-installer.XXXXXX") || exit 1
 trap 'rm -rf "$dir"' EXIT HUP INT TERM
-skip=$(awk '/^__OIE_INSTALLER_PAYLOAD__$/ {{ print NR + 1; exit }}' "$0")
-tail -n +"$skip" "$0" | tar -xzf - -C "$dir" || {{ echo "The installer is damaged." >&2; exit 1; }}
+tail -n +"$skip" "$self" | tar -xzf - -C "$dir" || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
 "$dir/{APP_NAME}/bin/{APP_NAME}" "$@"
 exit $?
 __OIE_INSTALLER_PAYLOAD__
 """
     with open(destination, "wb") as out:
         out.write(header.encode("utf-8"))
-        with tarfile.open(fileobj=out, mode="w:gz") as archive:
-            archive.add(image, arcname=image.name)
+        with open(payload, "rb") as source:
+            shutil.copyfileobj(source, out)
+    payload.unlink()
     destination.chmod(0o755)
 
 

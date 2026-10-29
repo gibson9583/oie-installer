@@ -14,7 +14,7 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 | Windows service | `Open Integration Engine Service`, no description, automatic, Local System, no failure actions | Smoke test |
 | macOS service | `/Library/LaunchDaemons/com.oie.oieservice.plist`: `<engine>/oieservice start-launchd`, `RunAtLoad` true, `KeepAlive` false, root | Smoke test |
 | Linux service | `/etc/systemd/system/oieservice.service`, byte for byte, enabled for `multi-user.target` and `graphical.target`, root | Smoke test |
-| Linux without systemd | `/etc/init.d/oieservice`, linked to `<engine>/oieservice`, with install4j's init header | Not run in CI |
+| Linux without systemd | `/etc/init.d/oieservice`, linked to `<engine>/oieservice`, with install4j's init header | Debian container in CI |
 | Services per computer | One | Wizard and validation |
 | Start Menu | Group **Open Integration Engine**: **Open Integration Engine Service** and **Open Integration Engine** | Smoke test |
 | Apps & Features | Key `4145-9206-7630-8076`, `Open Integration Engine <version>`, publisher `Open Integration Engine Project` | Smoke test |
@@ -22,7 +22,7 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 | macOS links | None | Smoke test |
 | Windows permissions | Unchanged; the folder inherits its parent's permissions | Code |
 | Uninstaller | `uninstall.exe` on Windows, `uninstall` on macOS and Linux | Smoke test |
-| Unattended mode | `-q -dir <folder>` | Smoke test |
+| Unattended mode | `-q -dir <folder>` on the `.exe`, `.dmg` and `.sh` | Smoke test |
 | Upgrade | Removes the previous program files and service, then installs; keeps the configuration and data | Smoke test |
 | Rollback | Removes the new files and registrations; keeps the configuration and data | Smoke test |
 | Running console engine on Windows | The user closes it; the installer does not end it | Smoke test |
@@ -46,5 +46,4 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 ## Not tested in CI
 
 - The wizard on a desktop, including the administrator approval prompts.
-- Linux systems without systemd.
 - External databases.

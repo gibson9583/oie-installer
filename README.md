@@ -33,7 +33,7 @@ macOS packages use ad hoc signing. Windows packages are unsigned.
 1. Start the package for your operating system:
    - Windows: run the `.exe`.
    - macOS: open the `.dmg`, then open **Open Integration Engine Installer**.
-   - Linux: make the `.sh` file executable and run it from a desktop session. It requests administrator access if needed.
+   - Linux: run `sh oie_unix_<version>-with-JRE.sh` from a desktop session. In a terminal, it asks for your password through `sudo`. Started from a file manager, it uses the desktop's administrator prompt (`pkexec`).
 2. Read the license and select **I accept**.
 3. Select the engine folder.
 4. Select the Java runtime for the engine.
@@ -80,11 +80,22 @@ The review screen shows the version of each selected add-on.
 
 ### Unattended installation
 
-On Linux, use `-q` to install with the default settings:
+Use `-q` to install with the default settings. Run the command as an administrator.
 
 ```bash
+# Linux
 sudo sh oie_unix_4_7_0-with-JRE.sh -q -dir /opt/openintegrationengine
+
+# macOS: mount the disk image, then run the application inside it
+sudo "/Volumes/Open Integration Engine Installer/Open Integration Engine Installer.app/Contents/MacOS/Open Integration Engine Installer" -q -dir /Applications/OpenIntegrationEngine
 ```
+
+```powershell
+# Windows, from an elevated prompt
+Start-Process -Wait .\oie_windows-x64_4_7_0-with-JRE.exe -ArgumentList '-q','-dir','C:\Program Files\OpenIntegrationEngine'
+```
+
+The Linux package checks its SHA-256 hash before it unpacks. It unpacks to `/var/tmp`, or to `TMPDIR` when set.
 
 This command uses Derby and selects available HTTP and HTTPS ports, starting at 8080 and 8443. It selects all bundled add-ons and registers a service when supported. The output includes the generated administrator password.
 
@@ -107,7 +118,7 @@ For custom settings, save an installation plan as JSON:
 }
 ```
 
-Run the installer with the plan:
+Run the installer with the plan. Each package accepts `--unattended`:
 
 ```bash
 sudo sh oie_unix_4_7_0-with-JRE.sh --unattended /path/to/plan.json
@@ -274,13 +285,15 @@ The tests cover:
 - Service operations, command-line access and the OIE Web Client.
 - Reinstallation over an existing engine.
 - Upgrades from OIE 4.6.0, including an existing running service.
+- The downloaded `.exe`, `.dmg` and `.sh` packages with `-q -dir`.
+- Linux without systemd, with the `/etc/init.d/oieservice` service, in a Debian container.
 - Failed upgrades, rollback and retry.
 - Installation with an external Java runtime.
 - Engine removal.
 
 Linux desktop checks verify the invoking user's UID, groups, environment and process cleanup without opening a browser.
 
-Desktop wizard interaction, external databases and Linux init.d service operation require separate validation.
+Desktop wizard interaction and external databases require separate validation.
 
 ## Implementation
 

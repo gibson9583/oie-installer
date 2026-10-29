@@ -121,6 +121,12 @@ jobs:
           else
             sudo env JAVA_HOME="$JAVA_HOME" "$(command -v python3)" -u ci/smoke_install.py
           fi
+      - name: Install on Linux without systemd
+        if: runner.os == 'Linux'
+        working-directory: installer
+        run: |
+          package=$(ls dist/oie_unix_*-with-JRE.sh | head -1)
+          docker run --rm -v "$PWD:/w:ro" debian:12 sh /w/ci/check_initd.sh "/w/$package"
       - name: Upload installer
         uses: actions/upload-artifact@v7
         with:

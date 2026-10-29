@@ -595,6 +595,48 @@ def quiet_no_jre() -> None:
     print("== No-JRE pass complete", flush=True)
 
 
+def downloaded_package() -> None:
+    """Run the package a user downloads, the .exe, .dmg or .sh, in install4j's unattended mode."""
+    packages = sorted((ROOT / "dist").glob("oie_*-with-JRE." + ("exe" if WINDOWS else "dmg" if MAC else "sh")))
+    if not packages:
+        raise SystemExit("No -with-JRE package in dist/")
+    package = packages[0]
+    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/Applications") if MAC else Path("/opt")
+    home = base / f"oie-smoke-package-{secrets.token_hex(3)}"
+    failed, mount = False, None
+    try:
+        print(f"== {package.name} -q -dir {home}", flush=True)
+        if MAC:
+            mount = Path(tempfile.mkdtemp()) / "mounted"
+            mount.mkdir()
+            run(["hdiutil", "attach", package, "-nobrowse", "-readonly", "-mountpoint", mount])
+            command = [mount / "Open Integration Engine Installer.app/Contents/MacOS/Open Integration Engine Installer"]
+        elif WINDOWS:
+            command = [package]
+        else:
+            command = ["sh", package]
+        run(command + ["-q", "-dir", home])
+        install4j_output(home, True)
+        run([launcher(home, "oieservice"), "status"], expect=0)
+    except BaseException:
+        failed = True
+        if home.exists():
+            diagnostics(home)
+        raise
+    finally:
+        if mount:
+            run(["hdiutil", "detach", mount], expect=None)
+        if launcher(home, "uninstall").is_file():
+            run([launcher(home, "uninstall"), "--yes"], expect=None)
+            try:
+                wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+            except SystemExit as error:
+                if not failed:
+                    raise
+                print(error, flush=True)
+    print("== Downloaded package pass complete", flush=True)
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     os.environ["OIE_INSTALLER_DEBUG"] = "1"
@@ -603,6 +645,7 @@ def main() -> int:
     upgrade(38080, 38443)
     legacy_installer(48080, 48443)
     quiet_no_jre()
+    downloaded_package()
     return 0
 
 

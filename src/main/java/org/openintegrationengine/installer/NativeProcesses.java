@@ -22,10 +22,13 @@ final class NativeProcesses {
         }
         List<String> command = new ArrayList<>();
         if (Privileges.administrator() && !Privileges.invokingUser().equals("root")) command.addAll(List.of("/usr/bin/sudo", "-n", "-u", Privileges.invokingUser(), "--"));
-        if (Model.MAC) {
-            // macOS nohup aborts when its private launchd console-detach call fails
-            // in a GUI/elevated helper session. Inherit ignored SIGHUP through exec;
-            // stdin and both output streams are already redirected below.
+        Path perl = Path.of("/usr/bin/perl");
+        if (Files.isExecutable(perl)) {
+            // The elevated helper can start with SIGTERM ignored. A JVM that starts with SIGTERM ignored never runs its
+            // shutdown hooks on SIGTERM, and a POSIX shell cannot restore an ignored signal. Restore the defaults, ignore SIGHUP.
+            command.addAll(List.of(perl.toString(), "-e", "$SIG{$_}='DEFAULT' for qw(TERM INT QUIT); $SIG{HUP}='IGNORE'; exec {$ARGV[0]} @ARGV or die \"exec $ARGV[0]: $!\\n\";", launcher.toString()));
+        } else if (Model.MAC) {
+            // macOS nohup aborts when its private launchd console-detach call fails in a GUI/elevated helper session.
             command.addAll(List.of("/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "oie-engine", launcher.toString()));
         } else command.addAll(List.of("/usr/bin/nohup", launcher.toString()));
         ProcessBuilder builder = new ProcessBuilder(command).directory(home.toFile()).redirectInput(new File("/dev/null"))
@@ -41,6 +44,13 @@ final class NativeProcesses {
         if (Model.WINDOWS) throw new IOException("Close the running engine (oieserver.exe). Without the service, Windows stops the engine only when its window closes.");
         Set<Long> owned = new HashSet<>(); processes.forEach(p -> owned.add(p.pid()));
         for (ProcessHandle process : processes) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) process.destroy();
+        // An engine started with SIGTERM ignored still handles SIGINT, which also runs its shutdown hooks.
+        Instant deadline = Instant.now().plusSeconds(10);
+        while (Instant.now().isBefore(deadline) && processes.stream().anyMatch(ProcessHandle::isAlive)) Thread.sleep(250);
+        for (ProcessHandle process : processes) if (process.isAlive()) {
+            try { Model.command("/bin/kill", "-INT", Long.toString(process.pid())); }
+            catch (IOException e) { if (process.isAlive()) throw e; }
+        }
     }
     static String backendClasspath(Path home) {
         Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");

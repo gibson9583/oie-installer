@@ -44,8 +44,13 @@ public final class EngineBootstrap {
         Thread shutdown = new Thread(() -> {
             // Windows console control reaches both JVMs; let the engine's shutdown hook finish.
             if (!WINDOWS) engine.destroy();
-            try { if (!engine.waitFor(50, TimeUnit.SECONDS)) engine.destroyForcibly(); }
+            try {
+                // An engine started with SIGTERM ignored still shuts down on SIGINT.
+                if (!WINDOWS && !engine.waitFor(10, TimeUnit.SECONDS)) new ProcessBuilder("/bin/kill", "-INT", Long.toString(engine.pid())).start().waitFor();
+                if (!engine.waitFor(40, TimeUnit.SECONDS)) engine.destroyForcibly();
+            }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            catch (IOException e) { engine.destroyForcibly(); }
         }, "oie-engine-shutdown");
         Runtime.getRuntime().addShutdownHook(shutdown);
         int status = engine.waitFor();

@@ -49,7 +49,7 @@ jobs:
           comm -13 "$RUNNER_TEMP/before.txt" "$RUNNER_TEMP/after.txt" | grep -v '^/opt/oie-record\|^/proc\|^/tmp\|^/home/runner\|^/var/log\|^/run' || true
           echo "== Links pointing into the engine folder"
           sudo find /usr /etc /opt -maxdepth 4 -type l -lname '/opt/oie-record*' -exec ls -l {} \; 2>/dev/null
-          for unit in /etc/systemd/system/oieservice.service /etc/init.d/oieservice; do echo "== $unit"; sudo ls -l "$unit" 2>&1; sudo cat "$unit" 2>&1 | head -40; done
+          for unit in /etc/systemd/system/oieservice.service /etc/init.d/oieservice; do echo "== $unit"; sudo ls -l "$unit" 2>&1 || true; sudo cat "$unit" 2>&1 | head -40 || true; done
           echo "== systemctl"; systemctl status --no-pager oieservice 2>&1 | head -20; systemctl is-enabled oieservice 2>&1
           echo "== Engine folder"; sudo ls -la /opt/oie-record
           echo "== Ownership"; sudo stat -c '%U:%G %a %n' /opt/oie-record /opt/oie-record/conf /opt/oie-record/conf/mirth.properties /opt/oie-record/oieservice
@@ -95,7 +95,7 @@ jobs:
           echo "== Files created outside the engine folder"
           sudo find /Library /usr/local /Applications -maxdepth 3 -newer "$RUNNER_TEMP/marker" 2>/dev/null | grep -v '^/Applications/oie-record' | head -40
           echo "== Launch daemon"; sudo cat /Library/LaunchDaemons/com.oie.oieservice.plist 2>&1
-          sudo launchctl print system/com.oie.oieservice 2>&1 | head -25
+          sudo launchctl print system/com.oie.oieservice 2>&1 | head -25 || true
           echo "== Links"; sudo find /usr/local/bin -maxdepth 1 -type l -lname '*oie-record*' -exec ls -l {} \; 2>/dev/null
           echo "== Engine folder"; ls -la /Applications/oie-record
           echo "== Ownership"; stat -f '%Su:%Sg %Lp %N' /Applications/oie-record /Applications/oie-record/conf /Applications/oie-record/conf/mirth.properties /Applications/oie-record/oieservice
