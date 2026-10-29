@@ -81,10 +81,12 @@ jobs:
         shell: pwsh
         run: |
           $nsis = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'NSIS\makensis.exe'
-          if (-not (Test-Path $nsis)) {
+          # Chocolatey can report success without installing when its feed fails; check the result and retry.
+          for ($attempt = 1; -not (Test-Path $nsis) -and $attempt -le 3; $attempt++) {
+            if ($attempt -gt 1) { Start-Sleep -Seconds (20 * $attempt) }
             choco install nsis --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           }
+          if (-not (Test-Path $nsis)) { throw "NSIS installation failed" }
           "$((Split-Path $nsis))" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build installer
         working-directory: installer

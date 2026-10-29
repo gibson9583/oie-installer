@@ -68,7 +68,7 @@ Each output has a `.sha256` file and `dist/build-receipt.json`.
 
 Windows EXEs are an NSIS self-extracting wrapper around the jpackage app image. The first screen is the JavaFX wizard. NSIS 3 is a Windows build prerequisite. JavaFX 21 has no Windows ARM64 build. The Windows ARM64 wizard is x64 and runs under emulation. Its engine runtime is native ARM64; pass that JDK with `--engine-java-home`. The Linux archive holds the app image; run `bin/OIE Installer JavaFX` as root.
 
-GitHub Actions builds all six outputs. Each job then installs the engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, and uninstalls it.
+GitHub Actions builds all six outputs. Each job then installs the engine unattended as a service and as a process, runs `oieservice` and `oiecommand`, loads the OIE Web Client, and uninstalls it.
 
 The build explicitly ad-hoc signs the macOS application, wraps the finished jpackage image with `hdiutil`, and verifies its signature and every payload hash inside the DMG before handoff. Developer ID signing and notarization are still needed for public distribution. DMG creation does not request Finder Automation access.
 
@@ -143,6 +143,7 @@ The application also supports `--uninstall <engine folder> --yes`. It verifies t
 - The installer always bundles Java. There are no separate install4j-style "without JRE" media; an existing Java 17+ can still run the engine.
 - Linux has no administrator prompt. Run the Linux wizard or unattended install as root.
 - Windows ARM64 uses the x64 WinSW service wrapper under emulation.
+- On Windows, a process-mode engine ignores the console stop request. Stopping, upgrading or uninstalling it ends its process tree after 50 seconds, as the WinSW stop timeout does for the service.
 - `oiecommand.exe` does not request elevation, and the launchers do not enforce install4j's single-instance check.
 - External database connections are not tested by the wizard.
 - A failed operation stops and reports its error, preserving completed changes and backups. There is no automatic whole-engine rollback, database rollback, interrupted-upgrade resumption or automatic update service.
