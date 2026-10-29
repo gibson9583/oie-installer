@@ -134,6 +134,7 @@ final class Installer {
         } else { begin("unpack"); Files.createDirectories(home); }
         Path properties = FilesSupport.safeTarget(home, "conf/mirth.properties");
         boolean passwordPending = false;
+        List<String> installedPlugins = new ArrayList<>();
         ObjectNode receipt = upgrade && existing.receipt() != null ? existing.receipt().deepCopy() : Json.object();
         List<String> changed; Path selectedJava; BooleanSupplier alive; long offset;
         int https = upgrade ? existing.httpsPort() : plan.httpsPort();
@@ -183,6 +184,7 @@ final class Installer {
                 ObjectNode installed = receipt.path("plugins").isObject() ? (ObjectNode)receipt.path("plugins") : receipt.putObject("plugins");
                 for (var plugin : payload.plugins) if (plan.plugins().get(plugin.id())) {
                     Archives.plugin(payload, plugin, home, backup == null ? null : backup.resolve("program/extensions"));
+                    installedPlugins.add(plugin.id());
                     installed.set(plugin.id(), plugin.metadata()); receipt.set("plugins", installed);
                     writeTools(home, receipt); log.accept("Installed " + plugin.name() + " " + plugin.version());
                 }
@@ -202,7 +204,7 @@ final class Installer {
                 }
                 writeTools(home, receipt); done("start", plan.service() ? "Registered the " + Services.supported() + " service" : "Process " + receipt.path("pid").asLong());
             } catch (Exception failure) {
-                rollback(home, existing, homeExisted, backup, layout, plan);
+                rollback(home, existing, homeExisted, backup, layout, installedPlugins);
                 throw failure;
             }
             begin("ready");
@@ -237,7 +239,7 @@ final class Installer {
      * install4j's rollback: remove the new program files and registrations, keep the user's settings and data.
      * The previous program files were already removed, as install4j's UninstallPreviousAction does; they remain in the backup.
      */
-    private void rollback(Path home, Model.Existing existing, boolean homeExisted, Path backup, Archives.Layout layout, Model.Plan plan) {
+    private void rollback(Path home, Model.Existing existing, boolean homeExisted, Path backup, Archives.Layout layout, List<String> installedPlugins) {
         log.accept("Rolling back: removing the new program files and registrations");
         List<String> problems = new ArrayList<>();
         try { Services.stop(home, true); } catch (Exception e) { problems.add(e.getMessage()); }
@@ -249,7 +251,8 @@ final class Installer {
             } else {
                 for (String top : layout.top()) if (!Archives.KEEP.contains(top) && !top.equals("extensions")) FilesSupport.deleteTree(home.resolve(top));
                 for (String extension : layout.extensions()) FilesSupport.deleteTree(home.resolve("extensions").resolve(extension));
-                for (var plugin : payload.plugins) if (plan.plugins().get(plugin.id())) FilesSupport.deleteTree(home.resolve("extensions").resolve(plugin.id()));
+                // Only the add-ons this run installed: install4j's rollback removes only what it installed.
+                for (String id : installedPlugins) FilesSupport.deleteTree(home.resolve("extensions").resolve(id));
                 // The configuration returns to its state before the upgrade.
                 if (backup != null && Files.isDirectory(backup.resolve("conf"))) { FilesSupport.deleteTree(home.resolve("conf")); FilesSupport.copyTree(backup.resolve("conf"), home.resolve("conf")); }
                 ObjectNode receipt = Json.object().put("version", existing.version()).put("archiveSha256", "").put("launcherCommit", "").put("home", home.toString())

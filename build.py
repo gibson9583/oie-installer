@@ -180,7 +180,7 @@ def build_payload(version: str, engine_repo: Path, platform: str, refresh: bool 
     if PAYLOAD.exists():
         for child in PAYLOAD.iterdir():
             if child.is_dir():
-                shutil.rmtree(child)
+                remove_tree(child)
             else:
                 child.unlink()
     (PAYLOAD / "launcher").mkdir(parents=True, exist_ok=True)
@@ -220,6 +220,21 @@ def build_payload(version: str, engine_repo: Path, platform: str, refresh: bool 
 APP_NAME = "Open Integration Engine Installer"
 WINSW_VERSION = "2.12.0"
 WINSW_SHA256 = "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
+
+
+def remove_tree(path: Path) -> None:
+    """shutil.rmtree that also removes read-only files and waits out brief Windows file locks."""
+    def writable(function, name, _):
+        os.chmod(name, stat.S_IWRITE)
+        function(name)
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path, onexc=writable)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(3)
 
 
 def executable(java_home: Path, name: str) -> str:
@@ -277,7 +292,7 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
         fail("The verified source archive is unavailable. Run the build without --app-only to prepare it.")
     stage = ROOT / "target/native-engine"
     if stage.exists():
-        shutil.rmtree(stage)
+        remove_tree(stage)
     stage.mkdir(parents=True)
     excluded = {".install4j", "oieserver", "oieserver.exe", "oieserver.ps1", "oieservice", "oieservice.exe", "oiecommand", "oiecommand.exe", "oiemanager", "oiemanager.exe", "uninstall", "uninstall.exe", "uninstall.dat", "jre"}
 
@@ -325,13 +340,13 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
         fail("The engine release layout is incomplete")
     inputs = ROOT / "target/engine-input"
     if inputs.exists():
-        shutil.rmtree(inputs)
+        remove_tree(inputs)
     inputs.mkdir()
     shutil.copy2(ROOT / "target/oie-installer-jpackage.jar", inputs)
     shutil.copytree(ROOT / "target/lib", inputs / "lib")
     native_out = ROOT / "target/engine-image"
     if native_out.exists():
-        shutil.rmtree(native_out)
+        remove_tree(native_out)
     mac = sys.platform == "darwin"
     windows = sys.platform == "win32"
     name = "OIE Engine" if mac else "oieserver"
@@ -390,7 +405,7 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
         (stage / "oiecommand.vmoptions").write_text("-include-options conf/default_modules.vmoptions\n-include-options conf/custom.vmoptions\n")
     destination = PAYLOAD / "engine"
     if destination.exists():
-        shutil.rmtree(destination)
+        remove_tree(destination)
     shutil.move(stage, destination)
     files = {p["archive"]: p["sha256"] for p in manifest["plugins"]}
     modes = {}
@@ -417,7 +432,7 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
     if old.is_file():
         old.unlink()  # The immutable, verified source archive remains in the shared download cache.
     if (PAYLOAD / "launcher").is_dir():
-        shutil.rmtree(PAYLOAD / "launcher")
+        remove_tree(PAYLOAD / "launcher")
     print(f"Pinned {len(files)} staged payload files; no compressed engine archive is shipped", flush=True)
     return manifest
 
@@ -538,14 +553,14 @@ def app_image(version: str, java_home: Path, env: dict, image_out: Path) -> Path
     target = ROOT / "target"
     inputs = target / "app-input"
     if inputs.exists():
-        shutil.rmtree(inputs)
+        remove_tree(inputs)
     inputs.mkdir()
     shutil.copyfile(target / "oie-installer-jpackage.jar", inputs / "oie-installer-jpackage.jar")
     shutil.copytree(target / "lib", inputs / "lib")
     if sys.platform != "darwin":
         shutil.copytree(PAYLOAD, inputs / "payload")
     if image_out.exists():
-        shutil.rmtree(image_out)
+        remove_tree(image_out)
     args = [executable(java_home, "jpackage"), "--type", "app-image", "--name", APP_NAME,
             "--dest", str(image_out), "--input", str(inputs), "--main-jar", "oie-installer-jpackage.jar",
             "--main-class", "org.openintegrationengine.installer.Main", "--app-version", version,
@@ -595,7 +610,7 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
             continue
         package_out = ROOT / "target/packages"
         if package_out.exists():
-            shutil.rmtree(package_out)
+            remove_tree(package_out)
         package_out.mkdir()
         package = package_out / media_name(version, bundled_java)
         if sys.platform == "darwin" and package_type == "dmg":
