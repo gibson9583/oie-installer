@@ -63,7 +63,18 @@ final class NativeProcesses {
               Start-Sleep -Milliseconds 1000
             } finally { [OieConsole]::FreeConsole() | Out-Null }
             """.formatted(pid);
-        Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
+        try { Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script)); }
+        catch (IOException e) { System.err.println(e.getMessage()); }
+        // Like the WinSW stop timeout: when the console request is not honored, end the launcher's process tree.
+        Instant deadline = Instant.now().plusSeconds(50);
+        while (Instant.now().isBefore(deadline) && !Model.engineProcesses(home).isEmpty()) Thread.sleep(500);
+        List<ProcessHandle> remaining = Model.engineProcesses(home);
+        Set<Long> owned = new HashSet<>(); remaining.forEach(p -> owned.add(p.pid()));
+        for (ProcessHandle process : remaining) if (process.parent().map(p -> !owned.contains(p.pid())).orElse(true)) {
+            System.err.println("The engine did not stop on request; ending process tree " + process.pid());
+            try { Model.command("taskkill.exe", "/PID", String.valueOf(process.pid()), "/T", "/F"); }
+            catch (IOException e) { if (process.isAlive()) throw e; }
+        }
     }
     static String backendClasspath(Path home) {
         Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
