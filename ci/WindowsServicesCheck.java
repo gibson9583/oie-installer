@@ -49,6 +49,10 @@ public final class WindowsServicesCheck {
             require(Model.WINDOWS, "This check requires Windows");
             switch (args[0]) {
                 case "missing" -> {
+                    String unicode = "caf\u00e9 \u4e2d\u6587 \uD83D\uDE80";
+                    require(timed("encoded_utf8", () -> Model.command("powershell.exe", "-NoProfile", "-EncodedCommand",
+                            Privileges.encoded("[Console]::Write('" + unicode + "')"))).equals(unicode),
+                            "Encoded PowerShell did not preserve UTF-8 output");
                     require(timed("find", Services::find) == null, "Missing service was reported present");
                     require(!timed("running", () -> Services.running(home)), "Missing service was reported running");
                     require(timed("conflict", () -> Services.conflict(home)).isEmpty(), "Missing service caused a conflict");

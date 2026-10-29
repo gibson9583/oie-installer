@@ -159,7 +159,7 @@ def profile(args):
         java_classpath = str(work) + os.pathsep + classpath
         commands = [("java_" + operation, [java, "-cp", java_classpath,
                      "org.openintegrationengine.installer.WindowsPerformanceProbe", operation, str(nonexistent)])
-                    for operation in ("startup", "process_handles", "engine_processes", "administrator", "service_find")]
+                    for operation in ("startup", "encoded_empty", "process_handles", "engine_processes", "administrator", "service_find")]
         commands.extend(("sc_" + verb, [shutil.which("sc.exe") or "sc.exe", verb, SERVICE])
                         for verb in ("query", "qc"))
         for index, shell in enumerate(powershells()):
@@ -179,7 +179,7 @@ def profile(args):
                 "controller_direct": "$ErrorActionPreference='Stop'; "
                                      "[void][Reflection.Assembly]::Load('System.ServiceProcess, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'); "
                                      "$s=[System.ServiceProcess.ServiceController]::new(); $s.ServiceName='" + SERVICE + "'; "
-                                     "try{$s.Status.ToString()}catch{$e=$_.Exception; while($e.InnerException){$e=$e.InnerException}; "
+                                     "try{[string]$s.Status}catch{$e=$_.Exception; while($e.InnerException){$e=$e.InnerException}; "
                                      "if($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 1060){'absent'}else{throw}}finally{$s.Dispose()}",
             }
             if index > 0:

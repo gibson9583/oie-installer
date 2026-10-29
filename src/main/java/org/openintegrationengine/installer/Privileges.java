@@ -102,7 +102,7 @@ final class Privileges {
     }
     static String powershell(String value) { return "'" + value.replace("'", "''") + "'"; }
     static String encoded(String value) {
-        return Base64.getEncoder().encodeToString(("[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)\n$ProgressPreference = 'SilentlyContinue'\n" + value).getBytes(StandardCharsets.UTF_16LE));
+        return Base64.getEncoder().encodeToString(("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n$ProgressPreference = 'SilentlyContinue'\n" + value).getBytes(StandardCharsets.UTF_16LE));
     }
     static String windowsArgument(String value) {
         StringBuilder result = new StringBuilder("\""); int slashes = 0;

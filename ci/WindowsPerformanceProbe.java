@@ -13,6 +13,7 @@ public final class WindowsPerformanceProbe {
         long started = System.nanoTime();
         switch (operation) {
             case "startup" -> result.put("result", "ready");
+            case "encoded_empty" -> result.put("output", Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded("exit 0")));
             case "engine_processes" -> {
                 Path home = Path.of(args[1]).toAbsolutePath().normalize();
                 result.put("matches", Model.engineProcesses(home).size());
