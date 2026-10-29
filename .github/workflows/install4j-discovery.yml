@@ -1,0 +1,101 @@
+name: Record install4j installer output
+on:
+  workflow_dispatch:
+    inputs:
+      engine_version:
+        description: Engine release whose install4j installer to record
+        default: 4.6.0
+        required: true
+permissions:
+  contents: read
+jobs:
+  record:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux, runner: ubuntu-24.04, media: "oie_unix_{v}.sh" }
+          - { name: Windows, runner: windows-2025, media: "oie_windows-x64_{v}.exe" }
+          - { name: macOS, runner: macos-15, media: "oie_macos_{v}-aarch.dmg" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download the install4j installer
+        env:
+          VERSION: ${{ inputs.engine_version }}
+          MEDIA: ${{ matrix.media }}
+        run: |
+          underscored="${VERSION//./_}"
+          name="${MEDIA//\{v\}/$underscored}"
+          curl -fsSL -o "$RUNNER_TEMP/$name" "https://github.com/OpenIntegrationEngine/engine/releases/download/v$VERSION/$name"
+          curl -fsSL -o "$RUNNER_TEMP/sha256sums" "https://github.com/OpenIntegrationEngine/engine/releases/download/v$VERSION/sha256sums"
+          (cd "$RUNNER_TEMP" && grep " \*\?$name\$" sha256sums | sed 's/ \*/  /' | sha256sum -c -)
+          echo "MEDIA_FILE=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
+      - name: Install unattended (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo find / -xdev -newer /etc/hostname -type f -o -xdev -newer /etc/hostname -type l 2>/dev/null | sort > "$RUNNER_TEMP/before.txt" || true
+          sudo env INSTALL4J_JAVA_HOME="$JAVA_HOME" sh "$MEDIA_FILE" -q -dir /opt/oie-record
+          sudo find / -xdev -newer /etc/hostname -type f -o -xdev -newer /etc/hostname -type l 2>/dev/null | sort > "$RUNNER_TEMP/after.txt" || true
+          echo "== Files and links created outside the engine folder"
+          comm -13 "$RUNNER_TEMP/before.txt" "$RUNNER_TEMP/after.txt" | grep -v '^/opt/oie-record\|^/proc\|^/tmp\|^/home/runner\|^/var/log\|^/run' || true
+          echo "== Links pointing into the engine folder"
+          sudo find /usr /etc /opt -maxdepth 4 -type l -lname '/opt/oie-record*' -exec ls -l {} \; 2>/dev/null
+          for unit in /etc/systemd/system/oieservice.service /etc/init.d/oieservice; do echo "== $unit"; sudo ls -l "$unit" 2>&1; sudo cat "$unit" 2>&1 | head -40; done
+          echo "== systemctl"; systemctl status --no-pager oieservice 2>&1 | head -20; systemctl is-enabled oieservice 2>&1
+          echo "== Engine folder"; sudo ls -la /opt/oie-record
+          echo "== Ownership"; sudo stat -c '%U:%G %a %n' /opt/oie-record /opt/oie-record/conf /opt/oie-record/conf/mirth.properties /opt/oie-record/oieservice
+      - name: Install unattended (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:INSTALL4J_JAVA_HOME = $env:JAVA_HOME
+          $p = Start-Process -FilePath $env:MEDIA_FILE -ArgumentList '-q','-dir','C:\oie-record' -Wait -PassThru
+          "installer exit: $($p.ExitCode)"
+          "== Services"
+          Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*oie-record*' } | Format-List Name,DisplayName,PathName,StartMode,StartName,State,Description
+          foreach ($s in (Get-CimInstance Win32_Service | Where-Object { $_.PathName -like '*oie-record*' })) { sc.exe qc "$($s.Name)"; sc.exe qfailure "$($s.Name)" }
+          "== Start Menu"
+          foreach ($root in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")) {
+            Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) } | ForEach-Object {
+              $l = (New-Object -ComObject WScript.Shell).CreateShortcut($_.FullName)
+              "$($_.FullName) -> $($l.TargetPath) $($l.Arguments) [dir $($l.WorkingDirectory)] [icon $($l.IconLocation)]"
+            }
+          }
+          "== Desktop"
+          Get-ChildItem "$env:PUBLIC\Desktop","$env:USERPROFILE\Desktop" -Filter *.lnk -ErrorAction SilentlyContinue | Select-Object FullName
+          "== Apps & Features"
+          Get-ChildItem HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall,HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object { "$($_.InstallLocation)$($_.UninstallString)" -like '*oie-record*' } | Format-List *
+          "== oiecommand.exe manifest"
+          Select-String -Path C:\oie-record\oiecommand.exe -Pattern 'requestedExecutionLevel[^>]*' -AllMatches | ForEach-Object { $_.Matches.Value } | Select-Object -Unique
+          Select-String -Path C:\oie-record\oieserver.exe -Pattern 'requestedExecutionLevel[^>]*' -AllMatches | ForEach-Object { $_.Matches.Value } | Select-Object -Unique
+          "== Engine folder"
+          Get-ChildItem C:\oie-record | Format-Table Mode,Length,Name
+          "== ACL"
+          icacls C:\oie-record; icacls C:\oie-record\conf
+      - name: Install unattended (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mount="$RUNNER_TEMP/mounted"; mkdir -p "$mount"
+          hdiutil attach "$MEDIA_FILE" -nobrowse -readonly -mountpoint "$mount" >/dev/null
+          ls -la "$mount"
+          app=$(ls -d "$mount"/*.app | head -1)
+          exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          touch "$RUNNER_TEMP/marker"
+          sudo env INSTALL4J_JAVA_HOME="$JAVA_HOME" "$app/Contents/MacOS/$exe" -q -dir /Applications/oie-record
+          hdiutil detach "$mount" >/dev/null
+          echo "== Files created outside the engine folder"
+          sudo find /Library /usr/local /Applications -maxdepth 3 -newer "$RUNNER_TEMP/marker" 2>/dev/null | grep -v '^/Applications/oie-record' | head -40
+          echo "== Launch daemon"; sudo cat /Library/LaunchDaemons/com.oie.oieservice.plist 2>&1
+          sudo launchctl print system/com.oie.oieservice 2>&1 | head -25
+          echo "== Links"; sudo find /usr/local/bin -maxdepth 1 -type l -lname '*oie-record*' -exec ls -l {} \; 2>/dev/null
+          echo "== Engine folder"; ls -la /Applications/oie-record
+          echo "== Ownership"; stat -f '%Su:%Sg %Lp %N' /Applications/oie-record /Applications/oie-record/conf /Applications/oie-record/conf/mirth.properties /Applications/oie-record/oieservice
