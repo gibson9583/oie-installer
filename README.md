@@ -271,7 +271,7 @@ Requirements:
 - Python 3.12 or later.
 - An engine repository clone with the requested release tag.
 - Windows: NSIS 3, the Windows SDK with `mt.exe`, and the .NET Framework 4 C# compiler that Windows includes.
-- Windows ARM64: a JDK 21 that includes JavaFX, such as Azul Zulu JDK FX, for `--java-home`.
+- Windows ARM64: a JDK 21 that includes JavaFX, such as BellSoft Liberica Full JDK, for `--java-home`.
 - macOS: the Xcode command-line tools.
 
 The Maven Wrapper supplies Maven. Build on the operating system and architecture of the target package.

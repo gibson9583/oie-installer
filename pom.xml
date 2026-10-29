@@ -11,7 +11,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <javafx.version>21.0.13</javafx.version>
     <jackson.version>2.22.4</jackson.version>
-    <!-- provided when the JDK includes JavaFX (Zulu JDK FX on Windows ARM64): jpackage then takes JavaFX from the JDK. -->
+    <!-- provided when the JDK includes JavaFX (Liberica Full JDK on Windows ARM64): jpackage then takes JavaFX from the JDK. -->
     <javafx.scope>compile</javafx.scope>
     <junit.version>5.11.4</junit.version>
   </properties>

@@ -81,8 +81,8 @@ jobs:
           - { id: macos-arm64, name: macOS ARM64, runner: macos-15, type: dmg }
           - { id: macos-x64, name: macOS x64, runner: macos-15-intel, type: dmg }
           - { id: windows-x64, name: Windows x64, runner: windows-2025, type: exe }
-          # OpenJFX 21 has no Windows ARM64 build: the wizard uses Zulu JDK FX, which includes JavaFX for ARM64.
-          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-jdk: zulu-fx }
+          # OpenJFX has no Windows ARM64 build: the wizard uses Liberica Full JDK, which includes JavaFX for ARM64.
+          - { id: windows-arm64, name: Windows ARM64, runner: windows-11-arm, type: exe, wizard-jdk: liberica-full }
           - { id: linux-x64, name: Linux x64, runner: ubuntu-24.04, type: sh }
           - { id: linux-arm64, name: Linux ARM64, runner: ubuntu-24.04-arm, type: sh }
     defaults:
@@ -113,23 +113,29 @@ jobs:
           cache: maven
           cache-dependency-path: installer/pom.xml
       - name: Set up the wizard JDK
-        # setup-java finds no Zulu JDK FX for Windows ARM64, so read Azul's metadata API directly and check the download's SHA-256.
-        if: matrix.wizard-jdk == 'zulu-fx'
+        # Neither OpenJFX nor Zulu publishes JavaFX for Windows ARM64. Liberica Full JDK includes it.
+        if: matrix.wizard-jdk == 'liberica-full'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $query = 'https://api.azul.com/metadata/v1/zulu/packages/?java_version=21&os=windows&arch=aarch64&archive_type=zip&java_package_type=jdk&javafx_bundled=true&latest=true&release_status=ga&availability_types=CA&page_size=1'
-          $package = @(Invoke-RestMethod $query)[0]
-          if (-not $package) { throw 'Azul lists no Zulu 21 JDK FX for Windows ARM64' }
-          $detail = Invoke-RestMethod "https://api.azul.com/metadata/v1/zulu/packages/$($package.package_uuid)"
-          Write-Host "$($package.name) $($package.java_version -join '.')"
-          $zip = Join-Path $env:RUNNER_TEMP $package.name
-          Invoke-WebRequest $package.download_url -OutFile $zip
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $detail.sha256_hash) { throw "$($package.name) does not match Azul's SHA-256" }
-          $target = Join-Path $env:RUNNER_TEMP 'zulu-fx'
+          $query = 'https://api.bell-sw.com/v1/liberica/releases?version-feature=21&version-modifier=latest&os=windows&arch=arm&bitness=64&bundle-type=jdk-full&package-type=zip'
+          $release = @(Invoke-RestMethod $query -UserAgent 'oie-installer-build')[0]
+          if (-not $release) { throw 'BellSoft lists no Liberica Full JDK 21 for Windows ARM64' }
+          Write-Host "$($release.filename)"
+          # The download is a GitHub release asset; check GitHub's SHA-256 digest as well as BellSoft's SHA-1.
+          if ($release.downloadUrl -notmatch '^https://github\.com/bell-sw/Liberica/releases/download/([^/]+)/') { throw "Unexpected download location: $($release.downloadUrl)" }
+          $digest = gh api "repos/bell-sw/Liberica/releases/tags/$($Matches[1])" --jq ".assets[] | select(.name == \"$($release.filename)\") | .digest"
+          if ($digest -notmatch '^sha256:[0-9a-f]{64}$') { throw "GitHub has no digest for $($release.filename)" }
+          $zip = Join-Path $env:RUNNER_TEMP $release.filename
+          Invoke-WebRequest $release.downloadUrl -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $digest.Substring(7)) { throw "$($release.filename) does not match GitHub's SHA-256" }
+          if ((Get-FileHash $zip -Algorithm SHA1).Hash -ne $release.sha1) { throw "$($release.filename) does not match BellSoft's SHA-1" }
+          $target = Join-Path $env:RUNNER_TEMP 'liberica-full'
           Expand-Archive $zip $target
           $jdk = (Get-ChildItem $target -Directory)[0].FullName
-          if (-not (Test-Path (Join-Path $jdk 'jmods\javafx.controls.jmod'))) { throw "$($package.name) has no JavaFX modules" }
+          if (-not (Test-Path (Join-Path $jdk 'jmods\javafx.controls.jmod'))) { throw "$($release.filename) has no JavaFX modules" }
           & (Join-Path $jdk 'bin\java.exe') -version
           "JAVA_HOME=$jdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "$jdk\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append

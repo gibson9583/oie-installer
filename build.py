@@ -605,7 +605,7 @@ __OIE_INSTALLER_PAYLOAD__
 
 
 def jdk_javafx(java_home: Path) -> bool:
-    """A JDK that includes JavaFX, such as Zulu JDK FX. Windows ARM64 needs it: OpenJFX 21 publishes no Windows ARM64 build."""
+    """A JDK that includes JavaFX, such as Liberica Full JDK. Windows ARM64 needs it: OpenJFX publishes no Windows ARM64 build."""
     return (java_home / "jmods/javafx.controls.jmod").is_file()
 
 
@@ -762,7 +762,7 @@ def main() -> int:
     parser.add_argument("--engine-repo", type=Path, default=ROOT.parent / "oie", help="Engine clone containing the release tag")
     parser.add_argument("--java-home", type=Path, help="JDK 21+ used to compile and bundle the installer runtime")
     parser.add_argument("--engine-java-home", type=Path, help="JDK 21+ bundled as the engine runtime (default: --java-home). "
-                        "On Windows ARM64, --java-home is a JDK that includes JavaFX, such as Zulu JDK FX, because OpenJFX 21 has no Windows ARM64 build")
+                        "On Windows ARM64, --java-home is a JDK that includes JavaFX, such as Liberica Full JDK, because OpenJFX has no Windows ARM64 build")
     parser.add_argument("--gradle-java-home", type=Path, help="JDK 17 that builds the engine with Gradle (default: --java-home)")
     parser.add_argument("--engine-gradle-arg", action="append", default=[], metavar="ARG",
                         help="Extra Gradle argument for the engine build, such as -Pkeystore_property_file=<file> to sign with the release certificate. Repeatable")
