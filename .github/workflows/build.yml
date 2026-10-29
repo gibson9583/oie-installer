@@ -127,7 +127,9 @@ jobs:
           Write-Host "$($release.filename)"
           # The download is a GitHub release asset; check GitHub's SHA-256 digest as well as BellSoft's SHA-1.
           if ($release.downloadUrl -notmatch '^https://github\.com/bell-sw/Liberica/releases/download/([^/]+)/') { throw "Unexpected download location: $($release.downloadUrl)" }
-          $digest = gh api "repos/bell-sw/Liberica/releases/tags/$($Matches[1])" --jq ".assets[] | select(.name == \"$($release.filename)\") | .digest"
+          $filter = '.assets[] | select(.name == "{0}") | .digest' -f $release.filename
+          $digest = gh api "repos/bell-sw/Liberica/releases/tags/$($Matches[1])" --jq $filter
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read the GitHub release for $($release.filename)" }
           if ($digest -notmatch '^sha256:[0-9a-f]{64}$') { throw "GitHub has no digest for $($release.filename)" }
           $zip = Join-Path $env:RUNNER_TEMP $release.filename
           Invoke-WebRequest $release.downloadUrl -OutFile $zip
