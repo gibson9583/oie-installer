@@ -274,7 +274,7 @@ def upgrade(http: int, https: int) -> None:
             script = work / "cli.txt"
             script.write_text("status\n")
             # The database came from the install4j engine, with its default administrator.
-            run([launcher(home, "oiecommand"), "-a", f"https://localhost:{https}", "-u", "admin", "-p", "admin", "-s", script], expect=None, timeout=180)
+            run([launcher(home, "oiecommand"), "-a", f"https://localhost:{https}", "-u", "admin", "-p", "admin", "-s", script], timeout=180)
         except BaseException:
             failed = True
             if home.exists():

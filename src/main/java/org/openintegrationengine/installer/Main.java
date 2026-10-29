@@ -11,8 +11,9 @@ public final class Main {
                 if (args.length == 2 && args[0].equals("--elevated-install")) { Privileges.helper(Path.of(args[1])); return; }
                 if (args.length == 2 && args[0].equals("--unattended")) {
                     var plan = Model.Plan.from(Json.read(Path.of(args[1])));
+                    String[] shown = {""};
                     var result = Privileges.install(Payload.load(), plan, event -> {
-                        if (event.state().equals("active")) System.out.println(event.label());
+                        if (event.state().equals("active") && !event.label().equals(shown[0])) System.out.println(shown[0] = event.label());
                     }, System.out::println);
                     if (result.containsKey("adminPassword")) result.put("adminPassword", "<as in the plan>");
                     System.out.println(Json.MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result));
