@@ -490,8 +490,17 @@ def verify_macos_dmg(package: Path) -> None:
 def macos_dmg(image: Path, destination: Path) -> None:
     # jpackage's DMG bundler re-signs ad-hoc app images recursively, changing
     # the embedded engine. Wrap the final jpackage image without modifying it.
-    subprocess.run(["hdiutil", "create", "-quiet", "-srcfolder", str(image.parent),
-                    "-volname", APP_NAME, "-fs", "HFS+", "-format", "UDZO", str(destination)], check=True)
+    # hdiutil create fails now and then on macOS runners without a stated reason; retry, and keep its messages for the log.
+    for attempt in range(3):
+        destination.unlink(missing_ok=True)
+        result = subprocess.run(["hdiutil", "create", "-srcfolder", str(image.parent),
+                                 "-volname", APP_NAME, "-fs", "HFS+", "-format", "UDZO", str(destination)],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        print(f"hdiutil create failed (attempt {attempt + 1} of 3): {(result.stdout + result.stderr).strip()}", flush=True)
+        time.sleep(10)
+    fail("hdiutil could not create " + destination.name)
 
 
 def windows_bootstrap(image: Path, destination: Path, version: str) -> None:
