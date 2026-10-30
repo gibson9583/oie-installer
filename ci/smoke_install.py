@@ -232,9 +232,16 @@ def windows_service_behavior(home: Path, https: int) -> None:
     if "The engine stopped with exit code" not in text or "did not stop within" in text:
         raise SystemExit("The Windows service did not stop the engine with Ctrl+C")
     print("== The engine ends on its own while the service runs", flush=True)
-    script = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mirth-server-launcher.jar*' -and $_.CommandLine -like "
-              f"'*{home}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}")
-    run(["powershell.exe", "-NoProfile", "-Command", script])
+    wait(lambda: port_open(https), f"HTTPS port {https}")
+    query = ("$ProgressPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
+             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
+    listed = subprocess.run(["powershell.exe", "-NoProfile", "-Command", query], capture_output=True, text=True, timeout=120)
+    processes = json.loads(listed.stdout or "[]")
+    processes = processes if isinstance(processes, list) else [processes]
+    engines = [p["ProcessId"] for p in processes if "mirth-server-launcher.jar" in (p.get("CommandLine") or "") and str(home) in (p.get("CommandLine") or "")]
+    if len(engines) != 1:
+        raise SystemExit(f"Expected one engine process, found {engines}: {listed.stdout[-2000:]}{listed.stderr[-2000:]}")
+    run(["taskkill.exe", "/PID", engines[0], "/F"])
     def stopped() -> bool:
         result = subprocess.run(["sc.exe", "query", WINDOWS_SERVICE], capture_output=True, text=True)
         return "STOPPED" in result.stdout
