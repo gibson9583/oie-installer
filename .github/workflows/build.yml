@@ -59,12 +59,49 @@ jobs:
       - name: Build the engine
         working-directory: installer
         run: python -u build.py --version "${{ steps.version.outputs.version }}" --engine-repo ../engine --java-home "$JAVA_HOME" --engine-only
+      - name: Compare the engine build with the release
+        working-directory: installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="oie_unix_${VERSION//./_}.tar.gz"
+          gh release download "v$VERSION" -R OpenIntegrationEngine/engine -p "$name" -p sha256sums -D target/release
+          expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1 }' target/release/sha256sums)
+          [ -n "$expected" ] || { echo "sha256sums has no $name"; exit 1; }
+          echo "$expected  target/release/$name" | sha256sum -c -
+          python ci/check_engine_parity.py "dist/engine/oie-engine-$VERSION.tar.gz" "target/release/$name"
       - uses: actions/upload-artifact@v7
         with:
           name: engine-build
           path: installer/dist/engine/*
           if-no-files-found: error
           retention-days: 14
+
+  lint:
+    # Workflows and shell scripts, including the header of the generated .sh installer.
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          echo "ACTIONLINT=$RUNNER_TEMP/actionlint" >> "$GITHUB_ENV"
+      - name: Lint
+        run: |
+          shellcheck --version
+          ci/lint.sh
 
   installer:
     # The OIE install4j media: each platform with and without a bundled engine Java runtime, and the engine archives.
@@ -165,7 +202,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ENGINE_JDK: ${{ steps.engine-jdk.outputs.path }}
-        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --engine-archive "target/engine-build/oie-engine-$ENGINE_VERSION.tar.gz" --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}"
+        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --engine-archive "target/engine-build/oie-engine-$ENGINE_VERSION.tar.gz" --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}" --coverage
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
@@ -198,6 +235,21 @@ jobs:
           else
             sudo env JAVA_HOME="$JAVA_HOME" "$(command -v python3)" -u ci/smoke_install.py
           fi
+      - name: Install through the wizard
+        if: runner.os == 'Linux'
+        working-directory: installer
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgtk-3-0t64 >/dev/null
+          sudo env JAVA_HOME="$JAVA_HOME" xvfb-run -a -s "-screen 0 1280x900x24" "$(command -v python3)" -u ci/check_wizard.py
+      - name: Preserve wizard screenshots
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wizard-screens-${{ matrix.id }}
+          path: installer/target/wizard-screens/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Install on Linux without systemd
         if: runner.os == 'Linux'
         working-directory: installer
@@ -234,6 +286,16 @@ jobs:
             installer/dist/*.tar.gz*
             installer/dist/*.zip*
           if-no-files-found: error
+          retention-days: 14
+      - name: Preserve unit test coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.id }}
+          path: |
+            installer/target/site/jacoco/**
+            installer/target/surefire-reports/**
+          if-no-files-found: ignore
           retention-days: 14
       - name: Preserve build diagnostics on failure
         if: failure()

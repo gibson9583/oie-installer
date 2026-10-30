@@ -51,5 +51,6 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 
 ## Not tested in CI
 
-- The wizard on a desktop, including the administrator approval prompts.
+- The wizard on macOS and Windows. CI runs it on Linux under a virtual display.
+- The administrator approval prompts.
 - External databases.

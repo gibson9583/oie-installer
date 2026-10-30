@@ -99,25 +99,7 @@ final class Services {
         if (!Privileges.administrator()) throw new IOException("Administrator privileges are required to install a system service.");
         String service = home.resolve("oieservice").toString();
         if (Model.MAC) {
-            Files.writeString(LAUNCHD_FILE, """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-                <plist version="1.0">
-                <dict>
-                    <key>Label</key>
-                    <string>%s</string>
-                    <key>ProgramArguments</key>
-                    <array>
-                        <string>%s</string>
-                         <string>start-launchd</string>
-                    </array>
-                    <key>KeepAlive</key>
-                    <false/>
-                    <key>RunAtLoad</key>
-                    <true/>
-                </dict>
-                </plist>
-                """.formatted(LAUNCHD_LABEL, xml(service)));
+            Files.writeString(LAUNCHD_FILE, launchdPlist(home));
             Model.command("chown", "root:wheel", LAUNCHD_FILE.toString()); Model.command("chmod", "644", LAUNCHD_FILE.toString());
             registered.accept(find()); Model.command("launchctl", "bootstrap", "system", LAUNCHD_FILE.toString());
         } else if (Model.WINDOWS) {
@@ -126,9 +108,7 @@ final class Services {
             // install4j registers oieservice.exe as an automatic Local System service with no description and no failure actions.
             Model.command(program.toString(), "--create-service"); registered.accept(find()); Model.command("sc.exe", "start", WINDOWS_NAME);
         } else if (supported().equals("systemd")) {
-            Files.writeString(UNIT_FILE, "[Unit]\nDescription=" + WINDOWS_NAME + "\nBefore=multi-user.target graphical.target\n"
-                    + "After=network-online.target remote-fs.target time-sync.target\nWants=network-online.target\n\n[Service]\nType=" + (systemdVersion() >= 240 ? "exec" : "simple")
-                    + "\nExecStart=\"" + service.replace("%", "%%") + "\" start-launchd\nSuccessExitStatus=0 143\nKillMode=process\n\n[Install]\nWantedBy=multi-user.target graphical.target\n");
+            Files.writeString(UNIT_FILE, systemdUnit(home, systemdVersion()));
             Model.command("chmod", "644", UNIT_FILE.toString());
             registered.accept(find()); Model.command("systemctl", "daemon-reload"); Model.command("systemctl", "enable", UNIT); Model.command("systemctl", "start", UNIT);
         } else if (supported().equals("init.d")) {
@@ -138,6 +118,34 @@ final class Services {
             registered.accept(find()); NativeProcesses.start(home, home.resolve("oieserver"));
         } else throw new IOException("This system has no supported service manager.");
         return find();
+    }
+    /** install4j's launch daemon: root, started at boot, not restarted. */
+    static String launchdPlist(Path home) {
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>%s</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>%s</string>
+                     <string>start-launchd</string>
+                </array>
+                <key>KeepAlive</key>
+                <false/>
+                <key>RunAtLoad</key>
+                <true/>
+            </dict>
+            </plist>
+            """.formatted(LAUNCHD_LABEL, xml(home.resolve("oieservice").toString()));
+    }
+    /** install4j's systemd unit; Type=exec needs systemd 240. */
+    static String systemdUnit(Path home, int systemdVersion) {
+        return "[Unit]\nDescription=" + WINDOWS_NAME + "\nBefore=multi-user.target graphical.target\n"
+                + "After=network-online.target remote-fs.target time-sync.target\nWants=network-online.target\n\n[Service]\nType=" + (systemdVersion >= 240 ? "exec" : "simple")
+                + "\nExecStart=\"" + home.resolve("oieservice").toString().replace("%", "%%") + "\" start-launchd\nSuccessExitStatus=0 143\nKillMode=process\n\n[Install]\nWantedBy=multi-user.target graphical.target\n";
     }
     private static int systemdVersion() {
         try { Matcher m = Pattern.compile("systemd (\\d+)").matcher(Model.command("systemctl", "--version")); return m.find() ? Integer.parseInt(m.group(1)) : 0; }

@@ -93,23 +93,7 @@ final class NativeProcesses {
             Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(menu));
         } else {
             String invoke = FilesSupport.quote(java.toString()) + " -cp " + FilesSupport.quote(classpath) + " " + Main.class.getName() + " --uninstall " + FilesSupport.quote(home.toString()) + " --yes";
-            String script = """
-                #!/bin/sh
-                set -eu
-                data=
-                if [ "${1:-}" = --yes ]; then
-                  if [ "${2:-}" = --delete-data ]; then data=--delete-data; fi
-                else
-                  printf 'Remove Open Integration Engine from %%s? Type yes: ' %s
-                  read -r answer
-                  [ "$answer" = yes ] || exit 1
-                  printf 'Also delete the configuration, database, logs and backups? Type delete to delete them, or press Enter to keep them: '
-                  read -r answer
-                  if [ "$answer" = delete ]; then data=--delete-data; fi
-                fi
-                if [ "$(id -u)" != 0 ]; then exec sudo %s $data; fi
-                exec %s $data
-                """.formatted(FilesSupport.quote(home.toString()), invoke, invoke);
+            String script = unixUninstaller(home, invoke);
             Path uninstaller = FilesSupport.safeTarget(home, "uninstall"); Files.writeString(uninstaller, script); FilesSupport.executable(uninstaller);
             // install4j links the service and command-line launchers into /usr/local/bin on Linux.
             if (!Model.MAC && Privileges.administrator() && Files.isDirectory(LINKS)) for (String name : LINKED) {
@@ -118,6 +102,26 @@ final class NativeProcesses {
                 Files.deleteIfExists(link); Files.createSymbolicLink(link, home.resolve(name));
             }
         }
+    }
+    /** The uninstall script for macOS and Linux: asks to confirm, then whether to delete the data, and runs the uninstaller as root. */
+    static String unixUninstaller(Path home, String invoke) {
+        return """
+            #!/bin/sh
+            set -eu
+            data=
+            if [ "${1:-}" = --yes ]; then
+              if [ "${2:-}" = --delete-data ]; then data=--delete-data; fi
+            else
+              printf 'Remove Open Integration Engine from %%s? Type yes: ' %s
+              read -r answer
+              [ "$answer" = yes ] || exit 1
+              printf 'Also delete the configuration, database, logs and backups? Type delete to delete them, or press Enter to keep them: '
+              read -r answer
+              if [ "$answer" = delete ]; then data=--delete-data; fi
+            fi
+            if [ "$(id -u)" != 0 ]; then exec sudo %s ${data:+"$data"}; fi
+            exec %s ${data:+"$data"}
+            """.formatted(FilesSupport.quote(home.toString()), invoke, invoke);
     }
     private static final Path LINKS = Path.of("/usr/local/bin");
     private static final List<String> LINKED = List.of("oieservice", "oiecommand");

@@ -316,6 +316,14 @@ Run the installer unit tests and the support regression tests:
 python3 -m unittest discover -s tests -v
 ```
 
+The unit tests cover settings-file edits, the OIE Web Client address, plan validation, text-mode questions, service definitions, the engine launcher options and the uninstaller. `./mvnw -Pcoverage test` writes a coverage report to `target/site/jacoco`.
+
+Run the lint checks for workflows and shell scripts. They need `actionlint` and `shellcheck`:
+
+```bash
+ci/lint.sh
+```
+
 Windows tests check the installed JDK's launcher through the Windows SDK. They also check application registration using temporary registry keys. Other platforms skip these native tests.
 
 After building the installer, run the filesystem cleanup checks:
@@ -326,7 +334,7 @@ python3 ci/check_file_cleanup.py
 
 These checks cover recursive deletion, read-only files, symbolic links and repeated cleanup. Windows checks also cover locked files and retry after closing a file handle.
 
-[GitHub Actions](.github/workflows/build.yml) builds the engine once, then both package variants for all six platform and architecture combinations. Each job runs installation tests against the packaged application images.
+[GitHub Actions](.github/workflows/build.yml) builds the engine once and compares it with the release archive. It then builds both package variants for all six platform and architecture combinations. Each job runs the unit tests and installation tests against the packaged application images. A lint job checks the workflows and shell scripts.
 
 The tests cover:
 
@@ -339,15 +347,18 @@ The tests cover:
 - Linux without systemd, with the `/etc/init.d/oieservice` service, in a Debian container.
 - Failed upgrades, rollback and retry.
 - Installation with an external Java runtime.
-- Text mode on Linux.
-- The engine archives on Windows and Linux, including Windows service registration.
-- Engine removal that keeps the data, and installation again over that data.
+- Text mode on Linux, including a declined license.
+- The wizard on Linux under a virtual display: every page, validation, navigation, installation and the Done page. Screenshots are saved as a build artifact.
+- The engine archives on Windows and Linux, as a process and as a service.
+- Windows service stops with Ctrl+C, and the service stopping when the engine ends.
+- The uninstaller's questions, engine removal that keeps the data, and installation again over that data.
+- The engine build against the release archive: the same files and bytes, apart from jar signatures and the build date.
 
 Linux desktop checks verify the invoking user's UID, groups, environment and process cleanup without opening a browser.
 
 macOS startup checks use the real engine and an AppleScript helper with SIGTERM ignored. They check startup in the user session, installation locking, PID recording, password cleanup, graceful stop, caller loss and recovery of engines started with SIGTERM ignored. These checks do not display an administrator approval dialog.
 
-Desktop wizard interaction and external databases require separate validation.
+The wizard on macOS and Windows, administrator approval prompts and external databases require separate validation.
 
 ## Implementation
 

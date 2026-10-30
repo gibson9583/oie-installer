@@ -567,7 +567,7 @@ case "$(uname -m)" in
 esac
 self=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 if [ "$(id -u)" != 0 ]; then
-  keep="DISPLAY XAUTHORITY WAYLAND_DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS XDG_CURRENT_DESKTOP DESKTOP_SESSION XDG_SESSION_TYPE XDG_CONFIG_HOME XDG_CONFIG_DIRS XDG_DATA_HOME XDG_DATA_DIRS"
+  keep="DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,XDG_CURRENT_DESKTOP,DESKTOP_SESSION,XDG_SESSION_TYPE,XDG_CONFIG_HOME,XDG_CONFIG_DIRS,XDG_DATA_HOME,XDG_DATA_DIRS"
   if [ ! -t 0 ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && command -v pkexec >/dev/null 2>&1; then
     # Started from a file manager: no terminal for sudo, so ask with the desktop's administrator prompt.
     exec pkexec env SUDO_UID="$(id -u)" SUDO_GID="$(id -g)" SUDO_USER="$(id -un)" \\
@@ -576,7 +576,7 @@ if [ "$(id -u)" != 0 ]; then
       sh "$self" "$@"
   fi
   command -v sudo >/dev/null 2>&1 || {{ echo "Run this installer as root." >&2; exit 1; }}
-  exec sudo --preserve-env=$(echo $keep | tr ' ' ',') sh "$self" "$@"
+  exec sudo --preserve-env="$keep" sh "$self" "$@"
 fi
 skip=$(awk '/^__OIE_INSTALLER_PAYLOAD__$/ {{ print NR + 1; exit }}' "$self")
 if command -v sha256sum >/dev/null 2>&1; then
@@ -710,7 +710,7 @@ def publish(package: Path, out: Path) -> str:
     return destination.name
 
 
-def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path, variants: list) -> None:
+def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path, variants: list, coverage: bool = False) -> None:
     for home in (java_home, engine_java_home):
         if not Path(executable(home, "jpackage")).is_file():
             fail(f"{home} has no jpackage. Select a full JDK 21 or later.")
@@ -719,7 +719,7 @@ def build_app(version: str, java_home: Path, package_type: str, engine_java_home
     maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
     # With a JDK that includes JavaFX, the JavaFX jars are for compiling only; jpackage takes the modules from the JDK.
     javafx = ["-Djavafx.scope=provided", "-Djavafx.platform=win"] if jdk_javafx(java_home) else []
-    subprocess.run([maven, "-B", *javafx, "package"], cwd=ROOT, env=env, check=True)
+    subprocess.run([maven, "-B", *javafx, *(["-Pcoverage"] if coverage else []), "package"], cwd=ROOT, env=env, check=True)
     out = ROOT / "dist"
     out.mkdir(exist_ok=True)
     built = []
@@ -768,6 +768,7 @@ def main() -> int:
                         help="Extra Gradle argument for the engine build, such as -Pkeystore_property_file=<file> to sign with the release certificate. Repeatable")
     parser.add_argument("--engine-archive", type=Path, help="Use this engine build (oie-engine-<version>.tar.gz from --engine-only) instead of building it")
     parser.add_argument("--engine-only", action="store_true", help="Build the engine archive into dist/engine and stop")
+    parser.add_argument("--coverage", action="store_true", help="Write a JaCoCo report of the unit tests to target/site/jacoco")
     parser.add_argument("--refresh", action="store_true", help="Build the engine and download add-ons again rather than reusing verified cache entries")
     parser.add_argument("--payload-only", action="store_true", help="Prepare the pinned payload and stop")
     parser.add_argument("--app-only", action="store_true", help="Reuse the existing pinned payload and rebuild the app")
@@ -808,7 +809,7 @@ def main() -> int:
     if args.payload_only:
         return 0
     variants = {"both": [False, True], "with-jre": [True], "no-jre": [False]}[args.media]
-    build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve(), variants)
+    build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve(), variants, args.coverage)
     return 0
 
 

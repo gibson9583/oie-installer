@@ -52,11 +52,14 @@ def installer() -> tuple[Path, Path]:
     return folder / "runtime/bin/java", folder / "app"
 
 
-def run(command: list, expect: int | None = 0, timeout: int = 900, env: dict | None = None) -> int:
-    print("+ " + " ".join(str(part) for part in command), flush=True)
+def run(command: list, expect: int | None = 0, timeout: int = 900, env: dict | None = None, answers: str | None = None) -> int:
+    print("+ " + " ".join(str(part) for part in command) + (" (with answers)" if answers is not None else ""), flush=True)
     # A file, not a pipe: a detached engine must not hold the output open.
-    with tempfile.TemporaryFile() as output:
-        code = subprocess.run([str(part) for part in command], stdin=subprocess.DEVNULL, stdout=output,
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as given:
+        if answers is not None:
+            given.write(answers.encode())
+            given.seek(0)
+        code = subprocess.run([str(part) for part in command], stdin=given if answers is not None else subprocess.DEVNULL, stdout=output,
                               stderr=subprocess.STDOUT, timeout=timeout, env=env).returncode
         output.seek(0)
         data = output.read()
@@ -221,10 +224,36 @@ def launcher(home: Path, name: str) -> Path:
     return home / (name + EXE)
 
 
+def windows_service_behavior(home: Path, https: int) -> None:
+    """oieservice.exe stops the engine with a console Ctrl+C, and stops the service when the engine ends on its own."""
+    log = home / "logs/oieservice.out"
+    text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+    print(f"--- {log}\n" + "\n".join(text.splitlines()[-30:]), flush=True)
+    if "The engine stopped with exit code" not in text or "did not stop within" in text:
+        raise SystemExit("The Windows service did not stop the engine with Ctrl+C")
+    print("== The engine ends on its own while the service runs", flush=True)
+    script = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*mirth-server-launcher.jar*' -and $_.CommandLine -like "
+              f"'*{home}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}")
+    run(["powershell.exe", "-NoProfile", "-Command", script])
+    def stopped() -> bool:
+        result = subprocess.run(["sc.exe", "query", WINDOWS_SERVICE], capture_output=True, text=True)
+        return "STOPPED" in result.stdout
+    wait(stopped, "the service to stop after the engine ended", seconds=120)
+    if "exited unexpectedly" not in log.read_text(encoding="utf-8", errors="replace"):
+        raise SystemExit("oieservice.exe did not record the unexpected engine exit")
+    run([launcher(home, "oieservice"), "start"])
+    wait(lambda: run([launcher(home, "oieservice"), "status"], expect=None) == 0, "the restarted service")
+    wait(lambda: port_open(https), f"HTTPS port {https}")
+
+
 def keep_data(home: Path, plan: Path, command: list, java: Path, classpath: str, https: int) -> None:
     """Uninstall without --delete-data keeps the settings and database; installing again continues with them."""
     print("== Uninstall and keep the data", flush=True)
-    run([launcher(home, "uninstall"), "--yes"])
+    if WINDOWS:
+        run([launcher(home, "uninstall"), "--yes"])
+    else:
+        # The questions a user answers: confirm with yes, then press Enter to keep the data.
+        run([launcher(home, "uninstall")], answers="yes\n\n")
     # Windows removes the program files after the uninstaller exits.
     wait(lambda: not (home / "server-lib").exists() and not launcher(home, "oieserver").exists(), "program file removal", seconds=180)
     for kept in ("conf/mirth.properties", "appdata/mirthdb", "logs/mirth.log", "oie-installer.json"):
@@ -283,6 +312,8 @@ def smoke(service: bool, http: int, https: int) -> None:
             if not (WINDOWS and not service):
                 run([service_launcher, "restart"], expect=0)
                 wait(lambda: run([service_launcher, "status"], expect=None) == 0, "restart")
+            if service and WINDOWS:
+                windows_service_behavior(home, https)
             if service:
                 print("== Reinstall over the installed engine", flush=True)
                 run([java, "-cp", classpath, "org.openintegrationengine.installer.Main", "--unattended", plan])
@@ -607,7 +638,10 @@ def quiet_no_jre() -> None:
         raise
     finally:
         if launcher(home, "uninstall").is_file():
-            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
+            if MAC:
+                run([launcher(home, "uninstall")], expect=None, answers="yes\ndelete\n")
+            else:
+                run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
             try:
                 wait(lambda: not home.exists(), "engine folder removal", seconds=180)
             except SystemExit as error:
@@ -711,11 +745,24 @@ def archive_media(http: int, https: int) -> None:
             run([service_launcher, "/uninstall" if WINDOWS else "stop"], env=env)
             wait(lambda: run([service_launcher, "status"], expect=None, env=env) == 3, "the engine to stop", seconds=120)
             wait(lambda: not port_open(https), f"HTTPS port {https} to close", seconds=120)
+            if LINUX:
+                print("== The archive as a systemd service", flush=True)
+                run([service_launcher, "install"], env=env)
+                if not java_cmd(home):
+                    raise SystemExit("oieservice install did not record the Java runtime for the service")
+                if f'ExecStart="{home}/oieservice" start-launchd' not in service_definition().read_text():
+                    raise SystemExit("The systemd unit does not run the archive's oieservice")
+                run(["systemctl", "is-enabled", "oieservice"])
+                wait(lambda: run([service_launcher, "status"], expect=None) == 0, "the systemd service")
+                wait(lambda: port_open(https), f"HTTPS port {https}")
+                run([service_launcher, "uninstall"])
+                if service_definition().exists():
+                    raise SystemExit("oieservice uninstall left the systemd unit")
+                wait(lambda: not port_open(https), f"HTTPS port {https} to close", seconds=120)
         except BaseException:
             if home.exists():
                 diagnostics(home)
-            if WINDOWS:
-                run([launcher(home, "oieservice"), "/uninstall"], expect=None, env=env)
+            run([launcher(home, "oieservice"), "/uninstall" if WINDOWS else "uninstall"], expect=None, env=env)
             raise
         finally:
             if not WINDOWS:
@@ -735,9 +782,14 @@ def text_mode(http: int, https: int) -> None:
     password = "OIE-" + secrets.token_urlsafe(18)
     # License (skip to the end, accept), folder, bundled Java, ports, Derby, password twice, normal process, three add-ons, install.
     answers = "\n".join(["a", "y", "", "", str(http), str(https), "", password, password, "n", "", "", "", ""]) + "\n"
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+    print("== Text mode with the license declined", flush=True)
+    declined = subprocess.run([str(java), "-cp", classpath, "org.openintegrationengine.installer.Main", "-c", "-dir", str(home)],
+                              input="a\nn\n", capture_output=True, text=True, timeout=120, env=env)
+    if declined.returncode != 1 or "Nothing was installed" not in declined.stdout or home.exists():
+        raise SystemExit(f"Declining the license must install nothing: exit {declined.returncode}\n{declined.stdout[-1000:]}{declined.stderr[-1000:]}")
     try:
         print(f"== Text mode -c -dir {home}", flush=True)
-        env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
         result = subprocess.run([str(java), "-cp", classpath, "org.openintegrationengine.installer.Main", "-c", "-dir", str(home)],
                                 input=answers, capture_output=True, text=True, timeout=900, env=env)
         print(result.stdout[-4000:] + result.stderr[-4000:], flush=True)
@@ -752,7 +804,10 @@ def text_mode(http: int, https: int) -> None:
         raise
     finally:
         if launcher(home, "uninstall").is_file():
-            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
+            # The questions a user answers: confirm with yes, then type delete to remove the data too.
+            run([launcher(home, "uninstall")], expect=None, answers="yes\ndelete\n")
+            if home.exists():
+                raise SystemExit("Answering delete left the engine folder")
         shutil.rmtree(home, ignore_errors=True)
     print("== Text mode pass complete", flush=True)
 

@@ -101,7 +101,7 @@ final class TextInstaller {
         return 0;
     }
 
-    private boolean license() throws IOException {
+    boolean license() throws IOException {
         String text;
         try (InputStream stream = TextInstaller.class.getResourceAsStream("/LICENSE.txt")) {
             text = new String(Objects.requireNonNull(stream, "LICENSE.txt").readAllBytes(), StandardCharsets.UTF_8);
@@ -126,7 +126,7 @@ final class TextInstaller {
         return choose("Java runtime for the engine", values, labels, 0);
     }
 
-    private int port(String label, int suggested, int other) throws IOException {
+    int port(String label, int suggested, int other) throws IOException {
         while (true) {
             String text = ask(label, String.valueOf(suggested));
             try {
@@ -138,7 +138,7 @@ final class TextInstaller {
         }
     }
 
-    private String administrator() throws IOException {
+    String administrator() throws IOException {
         while (true) {
             String password = secret("Administrator password (at least 15 characters; press Enter to generate one)");
             if (password.isEmpty()) return Model.password();
@@ -148,7 +148,7 @@ final class TextInstaller {
         }
     }
 
-    private String choose(String label, List<String> values, List<String> labels, int preset) throws IOException {
+    String choose(String label, List<String> values, List<String> labels, int preset) throws IOException {
         out.println(label + ":");
         for (int i = 0; i < labels.size(); i++) out.println("  " + (i + 1) + ") " + labels.get(i));
         while (true) {
