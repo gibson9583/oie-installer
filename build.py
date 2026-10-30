@@ -556,6 +556,7 @@ def unix_installer(image: Path, destination: Path) -> None:
     """A self-extracting shell installer, like install4j's oie_unix_*.sh: run it as root, or with -q -dir <folder>."""
     arch = "aarch64" if machine() == "arm64" else "x86_64"
     payload = ROOT / "target/unix-installer.tar.gz"
+    payload.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(payload, "w:gz") as archive:
         archive.add(image, arcname=image.name)
     digest = sha256_file(payload)
