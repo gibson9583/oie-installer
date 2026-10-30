@@ -101,7 +101,7 @@ jobs:
       - name: Lint
         run: |
           shellcheck --version
-          ci/lint.sh
+          sh ci/lint.sh
 
   installer:
     # The OIE install4j media: each platform with and without a bundled engine Java runtime, and the engine archives.

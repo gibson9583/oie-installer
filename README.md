@@ -321,7 +321,7 @@ The unit tests cover settings-file edits, the OIE Web Client address, plan valid
 Run the lint checks for workflows and shell scripts. They need `actionlint` and `shellcheck`:
 
 ```bash
-ci/lint.sh
+sh ci/lint.sh
 ```
 
 Windows tests check the installed JDK's launcher through the Windows SDK. They also check application registration using temporary registry keys. Other platforms skip these native tests.
