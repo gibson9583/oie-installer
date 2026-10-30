@@ -161,7 +161,7 @@ jobs:
         include:
           - { name: Java 17, image: 'eclipse-temurin:17-jdk', platform: linux/amd64 }
           - { name: Alpine, image: 'eclipse-temurin:21-jdk-alpine', platform: linux/amd64 }
-          - { name: ppc64le, image: 'eclipse-temurin:17-jdk', platform: linux/ppc64le }
+          - { name: ppc64le, image: 'eclipse-temurin:17-jdk', platform: linux/ppc64le, emulated: '1' }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -178,9 +178,10 @@ jobs:
           IMAGE: ${{ matrix.image }}
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.engine.outputs.version }}
+          EMULATED: ${{ matrix.emulated }}
         run: |
           name="oie_unix_${VERSION//./_}"
-          docker run --rm --platform "$PLATFORM" -v "$PWD:/w:ro" "$IMAGE" sh /w/ci/check_portable.sh "/w/dist/$name.sh" "/w/dist/$name.tar.gz"
+          docker run --rm --platform "$PLATFORM" -e EMULATED -v "$PWD:/w:ro" "$IMAGE" sh /w/ci/check_portable.sh "/w/dist/$name.sh" "/w/dist/$name.tar.gz"
 
   installer:
     # The OIE install4j media: each platform with and without a bundled engine Java runtime, and the engine archives.

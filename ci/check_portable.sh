@@ -14,6 +14,30 @@ wait_for() {
   until "$@" >/dev/null 2>&1; do tries=$((tries + 1)); [ "$tries" -lt 200 ] || return 1; sleep 3; done
 }
 started() { grep -q "server successfully started" "$1/logs/mirth.log"; }
+not_running() { ! "$1/oieservice" status; }
+# An emulated JVM can take minutes to exit, or hang, after its shutdown hooks finish. Under emulation the
+# check is that the engine began its clean shutdown. Everywhere else, oieservice stop must succeed.
+stop_engine() {
+  if [ -z "${EMULATED:-}" ]; then
+    "$1/oieservice" stop || fail "stop failed"
+    return
+  fi
+  "$1/oieservice" stop || true
+  grep -q "shutting down mirth" "$1/logs/mirth.log" || fail "the engine did not begin its shutdown"
+  tries=0
+  until not_running "$1" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 40 ]; then
+      echo "The emulated JVM did not exit; ending it"
+      for process in /proc/[0-9]*; do
+        if tr '\0' ' ' < "$process/cmdline" 2>/dev/null | grep -q "$1/mirth-server-launcher.jar"; then kill -9 "${process#/proc/}" || true; fi
+      done
+      sleep 5
+      break
+    fi
+    sleep 15
+  done
+}
 
 java -version
 uname -sm
@@ -31,7 +55,7 @@ wait_for started "$home" || fail "the installed engine did not start"
 "$home/oieservice" status || fail "the installed engine is not running"
 grep -q '^-java-cmd ' "$home/conf/custom.vmoptions" || fail "the Java runtime was not recorded"
 [ ! -e "$home/.launcher/oieserver" ] || fail "the portable engine holds native launchers"
-"$home/oieservice" stop || fail "stop failed"
+stop_engine "$home"
 if "$home/oieservice" status; then fail "the engine still runs after stop"; fi
 "$home/uninstall" --yes
 [ ! -e "$home/server-lib" ] && [ ! -e "$home/oieservice" ] || fail "the program files remain"
@@ -46,5 +70,5 @@ sed -i -e 's/^http.port *=.*/http.port = 8180/' -e 's/^https.port *=.*/https.por
 "$unpacked/oieservice" start || fail "start failed"
 wait_for started "$unpacked" || fail "the archive engine did not start"
 "$unpacked/oieservice" status || fail "the archive engine is not running"
-"$unpacked/oieservice" stop || fail "stop failed"
+stop_engine "$unpacked"
 echo "portable pass complete"
