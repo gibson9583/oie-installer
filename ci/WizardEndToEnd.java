@@ -71,7 +71,9 @@ public final class WizardEndToEnd {
         click(next());
 
         page("Java");
-        until("the bundled Java", () -> visible("Use the engine's bundled Java 21 runtime.") && !next().isDisabled());
+        // The portable installer has no bundled Java: it selects an installed one.
+        boolean bundled = System.getenv("OIE_WIZARD_INSTALLED_JAVA") == null;
+        until("the Java runtime", () -> (!bundled || visible("Use the engine's bundled Java 21 runtime.")) && !next().isDisabled());
         click(next());
 
         page("Network");

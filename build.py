@@ -303,66 +303,8 @@ INIT_HEADER = """# chkconfig:         2345 75 15
 """
 
 
-def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dict:
-    """Stage the verified release and a native engine image built with java_home's jpackage.
-
-    With bundled_java the engine image carries a full Java runtime (install4j's -with-JRE media). Without it,
-    the image carries only what its launchers need, and the engine runs on an installed Java 17 or later."""
-    manifest = json.loads((PAYLOAD / "manifest.json").read_text())
-    source = manifest.get("sourceArchive", {"name": manifest["archive"], "sha256": manifest["files"].get(manifest["archive"]), "size": manifest["size"]})
-    archive = PAYLOAD / source["name"]
-    if not archive.is_file():
-        archive = ROOT / "target/engine-archive" / source["name"]
-    if not archive.is_file() or sha256_file(archive) != source["sha256"]:
-        fail("The verified source archive is unavailable. Run the build without --app-only to prepare it.")
-    stage = ROOT / "target/native-engine"
-    if stage.exists():
-        remove_tree(stage)
-    stage.mkdir(parents=True)
-    excluded = {".install4j", "oieserver", "oieserver.exe", "oieserver.ps1", "oieservice", "oieservice.exe", "oiecommand", "oiecommand.exe", "oiemanager", "oiemanager.exe", "uninstall", "uninstall.exe", "uninstall.dat", "jre"}
-
-    def accept(name: str) -> Path | None:
-        parts = Path(name.replace("\\", "/")).parts
-        if not parts or parts[0] not in ("oie", "OpenIntegrationEngine") or ".." in parts or ":" in name or name.startswith(("/", "\\")):
-            fail("Unsafe engine release path: " + name)
-        if len(parts) == 1 or parts[1] in excluded:
-            return None
-        return stage.joinpath(*parts[1:])
-
-    print("Staging the engine build; the native launchers replace the portable ones", flush=True)
-    if source["name"].endswith(".zip"):
-        with zipfile.ZipFile(archive) as package:
-            for entry in package.infolist():
-                target = accept(entry.filename)
-                if target is None:
-                    continue
-                mode = entry.external_attr >> 16
-                if stat.S_ISLNK(mode):
-                    fail("Engine release contains a link: " + entry.filename)
-                if entry.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with package.open(entry) as src, target.open("wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    target.chmod(0o755 if mode & 0o111 else 0o644)
-    else:
-        with tarfile.open(archive, "r:gz") as package:
-            for entry in package:
-                target = accept(entry.name)
-                if target is None:
-                    continue
-                if not entry.isfile() and not entry.isdir():
-                    fail("Engine release contains a link or special file: " + entry.name)
-                if entry.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with package.extractfile(entry) as src, target.open("wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    target.chmod(0o755 if entry.mode & 0o111 else 0o644)
-    if not (stage / "mirth-server-launcher.jar").is_file() or not (stage / "conf/mirth.properties").is_file():
-        fail("The engine release layout is incomplete")
+def native_launchers(stage: Path, manifest: dict, java_home: Path, env: dict, bundled_java: bool) -> str:
+    """Native launchers and a Java runtime from java_home's jpackage. Returns the runtime's java path in the engine folder."""
     inputs = ROOT / "target/engine-input"
     if inputs.exists():
         remove_tree(inputs)
@@ -420,6 +362,116 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
                                           + 'self=$0\nwhile [ -h "$self" ]; do\n  link=$(readlink "$self")\n  case $link in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac\ndone\n'
                                           + 'OIE_HOME=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P) || exit 1\ncd "$OIE_HOME" || exit 1\nexec "$OIE_HOME/' + native + '" "$@"\n')
             (stage / launcher).chmod(0o755)
+    return runtime
+
+
+PORTABLE_LAUNCHER = """#!/bin/sh
+@HEADER@self=$0
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac
+done
+OIE_HOME=$(CDPATH='' cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+cd "$OIE_HOME" || exit 1
+supported() {
+  [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+  major=$("$1" -version 2>&1 | sed -n 's/.*version "\\([0-9]*\\).*/\\1/p' | head -n 1)
+  [ "${major:-0}" -ge 17 ]
+}
+java=
+configured=$(sed -n 's/^[[:space:]]*-java-cmd[[:space:]][[:space:]]*//p' conf/custom.vmoptions 2>/dev/null | tail -n 1 | tr -d "\\"'")
+for candidate in "${OIE_JAVA_PATH:-}" "$configured" "${JAVA_HOME:+$JAVA_HOME/bin/java}" "$(command -v java 2>/dev/null)"; do
+  if supported "$candidate"; then java=$candidate; break; fi
+done
+if [ -z "$java" ]; then
+  echo "Open Integration Engine needs Java 17 or later. Set JAVA_HOME, or add -java-cmd <path to java> to conf/custom.vmoptions." >&2
+  exit 1
+fi
+exec "$java" -XX:+UseSerialGC -Xmx64m -Doie.engine.home="$OIE_HOME" -Doie.engine.role=@ROLE@ \\
+  -cp "$OIE_HOME/.launcher/portable/oie-installer-jpackage.jar:$OIE_HOME/.launcher/portable/lib/*" \\
+  org.openintegrationengine.installer.EngineBootstrap "$@"
+"""
+
+
+def portable_launchers(stage: Path) -> None:
+    """Script launchers that run EngineBootstrap on an installed Java, with the installer classes it needs but no JavaFX."""
+    portable = stage / ".launcher/portable"
+    (portable / "lib").mkdir(parents=True)
+    shutil.copy2(ROOT / "target/oie-installer-jpackage.jar", portable)
+    for jar in sorted((ROOT / "target/lib").glob("*.jar")):
+        if not jar.name.startswith("javafx-"):
+            shutil.copy2(jar, portable / "lib")
+    for launcher, role in (("oieserver", "server"), ("oieservice", "service"), ("oiecommand", "command")):
+        (stage / launcher).write_text(PORTABLE_LAUNCHER.replace("@HEADER@", INIT_HEADER if launcher == "oieservice" else "").replace("@ROLE@", role))
+        (stage / launcher).chmod(0o755)
+
+
+def native_payload(java_home: Path, env: dict, bundled_java: bool = True, portable: bool = False) -> dict:
+    """Stage the verified release with its launchers.
+
+    With bundled_java the engine image carries a full Java runtime (install4j's -with-JRE media). Without it,
+    the image carries only what its launchers need, and the engine runs on an installed Java 17 or later.
+    A portable engine holds no native code: script launchers run on an installed Java, on any CPU, like install4j's oie_unix media."""
+    manifest = json.loads((PAYLOAD / "manifest.json").read_text())
+    source = manifest.get("sourceArchive", {"name": manifest["archive"], "sha256": manifest["files"].get(manifest["archive"]), "size": manifest["size"]})
+    archive = PAYLOAD / source["name"]
+    if not archive.is_file():
+        archive = ROOT / "target/engine-archive" / source["name"]
+    if not archive.is_file() or sha256_file(archive) != source["sha256"]:
+        fail("The verified source archive is unavailable. Run the build without --app-only to prepare it.")
+    stage = ROOT / "target/native-engine"
+    if stage.exists():
+        remove_tree(stage)
+    stage.mkdir(parents=True)
+    excluded = {".install4j", "oieserver", "oieserver.exe", "oieserver.ps1", "oieservice", "oieservice.exe", "oiecommand", "oiecommand.exe", "oiemanager", "oiemanager.exe", "uninstall", "uninstall.exe", "uninstall.dat", "jre"}
+
+    def accept(name: str) -> Path | None:
+        parts = Path(name.replace("\\", "/")).parts
+        if not parts or parts[0] not in ("oie", "OpenIntegrationEngine") or ".." in parts or ":" in name or name.startswith(("/", "\\")):
+            fail("Unsafe engine release path: " + name)
+        if len(parts) == 1 or parts[1] in excluded:
+            return None
+        return stage.joinpath(*parts[1:])
+
+    print("Staging the engine build; the native launchers replace the portable ones", flush=True)
+    if source["name"].endswith(".zip"):
+        with zipfile.ZipFile(archive) as package:
+            for entry in package.infolist():
+                target = accept(entry.filename)
+                if target is None:
+                    continue
+                mode = entry.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    fail("Engine release contains a link: " + entry.filename)
+                if entry.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with package.open(entry) as src, target.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    target.chmod(0o755 if mode & 0o111 else 0o644)
+    else:
+        with tarfile.open(archive, "r:gz") as package:
+            for entry in package:
+                target = accept(entry.name)
+                if target is None:
+                    continue
+                if not entry.isfile() and not entry.isdir():
+                    fail("Engine release contains a link or special file: " + entry.name)
+                if entry.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with package.extractfile(entry) as src, target.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    target.chmod(0o755 if entry.mode & 0o111 else 0o644)
+    if not (stage / "mirth-server-launcher.jar").is_file() or not (stage / "conf/mirth.properties").is_file():
+        fail("The engine release layout is incomplete")
+    if portable:
+        portable_launchers(stage)
+        runtime = ""
+    else:
+        runtime = native_launchers(stage, manifest, java_home, env, bundled_java)
     # Both launcher roles consume the shipped OIE includes and custom.vmoptions.
     server_options = (stage / "oieserver.vmoptions").read_text()
     (stage / "oieservice.vmoptions").write_text(server_options)
@@ -440,11 +492,11 @@ def native_payload(java_home: Path, env: dict, bundled_java: bool = True) -> dic
             modes[relative] = 0o755 if path.stat().st_mode & 0o111 else 0o644
     manifest.update({"format": 2, "sourceArchive": source, "files": files, "modes": modes, "engineJava": runtime, "bundledJava": bundled_java,
                      "directories": [p.relative_to(destination).as_posix() for p in sorted(destination.rglob("*")) if p.is_dir()],
-                     "engineLaunchers": {n: n + (".exe" if windows else "") for n in ("oieserver", "oieservice", "oiecommand")},
-                     "engineRuntime": subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
+                     "engineLaunchers": {n: n + (".exe" if sys.platform == "win32" and not portable else "") for n in ("oieserver", "oieservice", "oiecommand")}, "portable": portable,
+                     "engineRuntime": "An installed Java 17 or later" if portable else subprocess.check_output([executable(java_home, "java"), "-version"], stderr=subprocess.STDOUT, text=True),
                      "size": sum((PAYLOAD / name).stat().st_size for name in files), "packagedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-    manifest["launcher"]["kind"] = "jpackage"
-    manifest["launcher"]["source"] = "jpackage engine image / EngineBootstrap.java" + (" / packaging/windows/OieService.cs" if windows else "")
+    manifest["launcher"]["kind"] = "script" if portable else "jpackage"
+    manifest["launcher"]["source"] = "EngineBootstrap.java" if portable else "jpackage engine image / EngineBootstrap.java" + (" / packaging/windows/OieService.cs" if sys.platform == "win32" else "")
     staged = PAYLOAD / "manifest.json.tmp"
     staged.write_text(json.dumps(manifest, indent=2) + "\n")
     os.replace(staged, PAYLOAD / "manifest.json")
@@ -548,13 +600,58 @@ def media_name(version: str, bundled_java: bool) -> str:
         return f"oie_windows-{machine()}_{underscored}{jre}.exe"
     if sys.platform == "darwin":
         return f"oie_macos_{underscored}-{'aarch' if arm else 'x86'}{jre}.dmg"
-    # install4j ships one Unix installer; a native installer needs one per CPU, so ARM64 adds a suffix.
+    # Without a bundled Java the portable .sh covers every CPU. A bundled Java needs one installer per CPU, so ARM64 adds a suffix.
     return f"oie_unix_{underscored}{'-aarch64' if arm else ''}{jre}.sh"
 
 
-def unix_installer(image: Path, destination: Path) -> None:
-    """A self-extracting shell installer, like install4j's oie_unix_*.sh: run it as root, or with -q -dir <folder>."""
+def unix_installer(image: Path, destination: Path, portable: bool = False) -> None:
+    """A self-extracting shell installer, like install4j's oie_unix_*.sh: run it as root, or with -q -dir <folder>.
+
+    The portable installer runs on an installed Java 17 or later, on any CPU. It opens the wizard on Linux x64 and ARM64 with glibc."""
     arch = "aarch64" if machine() == "arm64" else "x86_64"
+    if portable:
+        requirement = """supported() {
+  [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+  major=$("$1" -version 2>&1 | sed -n 's/.*version "\\([0-9]*\\).*/\\1/p' | head -n 1)
+  [ "${major:-0}" -ge 17 ]
+}
+java=
+for candidate in "${OIE_JAVA_PATH:-}" "${JAVA_HOME:+$JAVA_HOME/bin/java}" "$(command -v java 2>/dev/null)"; do
+  if supported "$candidate"; then java=$candidate; break; fi
+done
+if [ -z "$java" ]; then
+  echo "This installer needs Java 17 or later. Set JAVA_HOME, or use a -with-JRE installer." >&2
+  exit 1
+fi
+# sudo resets the PATH: pass on the Java found here.
+OIE_JAVA_PATH=$java
+export OIE_JAVA_PATH"""
+    else:
+        requirement = f"""case "$(uname -m)" in
+  {arch}{"|arm64" if arch == "aarch64" else "|amd64"}) ;;
+  *) echo "This installer is for {arch} Linux. Use the oie_unix installer for $(uname -m)." >&2; exit 1 ;;
+esac"""
+    if portable:
+        launch = f"""app="$dir/{APP_NAME}/app"
+classpath="$app/oie-installer-jpackage.jar:$app/lib/*"
+javafx=
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64|Linux-amd64) javafx=linux-x86_64 ;;
+  Linux-aarch64|Linux-arm64) javafx=linux-aarch64 ;;
+esac
+# JavaFX needs glibc; other systems use the text installer.
+for library in /lib/ld-musl-*; do
+  if [ -e "$library" ]; then javafx=; fi
+done
+if [ -n "$javafx" ]; then classpath="$classpath:$app/javafx/$javafx/*"; fi
+"$java" -Dfile.encoding=UTF-8 -cp "$classpath" org.openintegrationengine.installer.Main "$@\""""
+    else:
+        launch = f"""# Use the bundled java command directly: the Linux jpackage app launcher can
+# crash before Main runs. Keep the wizard and unattended modes on the same path.
+app="$dir/{APP_NAME}"
+"$app/lib/runtime/bin/java" --enable-native-access=ALL-UNNAMED -Dfile.encoding=UTF-8 \\
+  -cp "$app/lib/app/oie-installer-jpackage.jar:$app/lib/app/lib/*" \\
+  org.openintegrationengine.installer.Main "$@\""""
     payload = ROOT / "target/unix-installer.tar.gz"
     payload.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(payload, "w:gz") as archive:
@@ -562,18 +659,15 @@ def unix_installer(image: Path, destination: Path) -> None:
     digest = sha256_file(payload)
     header = f"""#!/bin/sh
 # Open Integration Engine Installer
-case "$(uname -m)" in
-  {arch}{"|arm64" if arch == "aarch64" else "|amd64"}) ;;
-  *) echo "This installer is for {arch} Linux. Use the oie_unix installer for $(uname -m)." >&2; exit 1 ;;
-esac
+{requirement}
 self=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 if [ "$(id -u)" != 0 ]; then
-  keep="DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,XDG_CURRENT_DESKTOP,DESKTOP_SESSION,XDG_SESSION_TYPE,XDG_CONFIG_HOME,XDG_CONFIG_DIRS,XDG_DATA_HOME,XDG_DATA_DIRS"
+  keep="DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS,XDG_CURRENT_DESKTOP,DESKTOP_SESSION,XDG_SESSION_TYPE,XDG_CONFIG_HOME,XDG_CONFIG_DIRS,XDG_DATA_HOME,XDG_DATA_DIRS,OIE_JAVA_PATH"
   if [ ! -t 0 ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && command -v pkexec >/dev/null 2>&1; then
     # Started from a file manager: no terminal for sudo, so ask with the desktop's administrator prompt.
     exec pkexec env SUDO_UID="$(id -u)" SUDO_GID="$(id -g)" SUDO_USER="$(id -un)" \\
       DISPLAY="$DISPLAY" XAUTHORITY="${{XAUTHORITY:-$HOME/.Xauthority}}" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \\
-      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" XDG_CURRENT_DESKTOP="$XDG_CURRENT_DESKTOP" XDG_SESSION_TYPE="$XDG_SESSION_TYPE" \\
+      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" XDG_CURRENT_DESKTOP="$XDG_CURRENT_DESKTOP" XDG_SESSION_TYPE="$XDG_SESSION_TYPE" OIE_JAVA_PATH="${{OIE_JAVA_PATH:-}}" \\
       sh "$self" "$@"
   fi
   command -v sudo >/dev/null 2>&1 || {{ echo "Run this installer as root." >&2; exit 1; }}
@@ -583,17 +677,15 @@ skip=$(awk '/^__OIE_INSTALLER_PAYLOAD__$/ {{ print NR + 1; exit }}' "$self")
 if command -v sha256sum >/dev/null 2>&1; then
   actual=$(tail -n +"$skip" "$self" | sha256sum | cut -d' ' -f1)
   [ "$actual" = "{digest}" ] || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
+elif command -v shasum >/dev/null 2>&1; then
+  actual=$(tail -n +"$skip" "$self" | shasum -a 256 | cut -d' ' -f1)
+  [ "$actual" = "{digest}" ] || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
 fi
 # /var/tmp is on disk; /tmp is often a small memory file system.
 dir=$(mktemp -d "${{TMPDIR:-/var/tmp}}/oie-installer.XXXXXX") || exit 1
 trap 'rm -rf "$dir"' EXIT HUP INT TERM
 tail -n +"$skip" "$self" | tar -xzf - -C "$dir" || {{ echo "The installer is damaged. Download it again." >&2; exit 1; }}
-# Use the bundled java command directly: the Linux jpackage app launcher can
-# crash before Main runs. Keep the wizard and unattended modes on the same path.
-app="$dir/{APP_NAME}"
-"$app/lib/runtime/bin/java" --enable-native-access=ALL-UNNAMED -Dfile.encoding=UTF-8 \
-  -cp "$app/lib/app/oie-installer-jpackage.jar:$app/lib/app/lib/*" \
-  org.openintegrationengine.installer.Main "$@"
+{launch}
 exit $?
 __OIE_INSTALLER_PAYLOAD__
 """
@@ -652,13 +744,8 @@ def app_image(version: str, java_home: Path, env: dict, image_out: Path) -> Path
 
 
 def archive_media_name(version: str) -> str | None:
-    """install4j's archive names: oie_unix_<version>.tar.gz and oie_windows-<arch>_<version>.zip. The launchers are native, so Linux ARM64 adds a suffix."""
-    underscored = version.replace(".", "_")
-    if sys.platform == "win32":
-        return f"oie_windows-{machine()}_{underscored}.zip"
-    if sys.platform.startswith("linux"):
-        return f"oie_unix_{underscored}{'-aarch64' if machine() == 'arm64' else ''}.tar.gz"
-    return None
+    """install4j's Windows archive name. The Unix archive, oie_unix_<version>.tar.gz, is portable: see build_portable."""
+    return f"oie_windows-{machine()}_{version.replace('.', '_')}.zip" if sys.platform == "win32" else None
 
 
 def engine_archive_media(version: str, destination: Path) -> None:
@@ -709,6 +796,53 @@ def publish(package: Path, out: Path) -> str:
     destination.with_name(destination.name + ".sha256").write_text(f"{digest}  {destination.name}\n")
     print(f"Built {destination}\nSHA-256: {digest}", flush=True)
     return destination.name
+
+
+def javafx_jars(destination: Path, classifier: str, env: dict) -> None:
+    """The JavaFX jars for one platform, for the portable installer's wizard."""
+    version = re.search(r"<javafx.version>([^<]+)<", (ROOT / "pom.xml").read_text()).group(1)
+    maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
+    destination.mkdir(parents=True)
+    for module in ("base", "graphics", "controls"):
+        subprocess.run([maven, "-B", "-q", "org.apache.maven.plugins:maven-dependency-plugin:3.11.0:copy",
+                        f"-Dartifact=org.openjfx:javafx-{module}:{version}:jar:{classifier}", f"-DoutputDirectory={destination}"],
+                       cwd=ROOT, env=env, check=True)
+
+
+def build_portable(version: str, java_home: Path, coverage: bool = False) -> None:
+    """oie_unix_<version>.tar.gz and oie_unix_<version>.sh: one build for every CPU, on an installed Java 17 or later, like install4j's."""
+    env = dict(os.environ, JAVA_HOME=str(java_home), PATH=str(java_home / "bin") + os.pathsep + os.environ.get("PATH", ""))
+    maven = str(ROOT / ("mvnw.cmd" if sys.platform == "win32" else "mvnw"))
+    print("Compiling and testing the installer", flush=True)
+    subprocess.run([maven, "-B", *(["-Pcoverage"] if coverage else []), "package"], cwd=ROOT, env=env, check=True)
+    native_payload(java_home, env, bundled_java=False, portable=True)
+    underscored = version.replace(".", "_")
+    package_out, out = ROOT / "target/packages", ROOT / "dist"
+    if package_out.exists():
+        remove_tree(package_out)
+    package_out.mkdir()
+    out.mkdir(exist_ok=True)
+    archive = package_out / f"oie_unix_{underscored}.tar.gz"
+    print(f"Packing {archive.name}", flush=True)
+    engine_archive_media(version, archive)
+    built = [publish(archive, out)]
+    image = ROOT / "target/image-portable"
+    if image.exists():
+        remove_tree(image)
+    app = image / APP_NAME / "app"
+    (app / "lib").mkdir(parents=True)
+    shutil.copy2(ROOT / "target/oie-installer-jpackage.jar", app)
+    for jar in sorted((ROOT / "target/lib").glob("*.jar")):
+        if not jar.name.startswith("javafx-"):
+            shutil.copy2(jar, app / "lib")
+    javafx_jars(app / "javafx/linux-x86_64", "linux", env)
+    javafx_jars(app / "javafx/linux-aarch64", "linux-aarch64", env)
+    shutil.copytree(PAYLOAD, app / "payload")
+    verify_packaged_payload(app / "payload")
+    package = package_out / f"oie_unix_{underscored}.sh"
+    unix_installer(image / APP_NAME, package, portable=True)
+    built.append(publish(package, out))
+    (out / "build-receipt-portable.json").write_text(json.dumps({"engineVersion": version, "media": built, "portable": True, "testsRun": True}, indent=2) + "\n")
 
 
 def build_app(version: str, java_home: Path, package_type: str, engine_java_home: Path, variants: list, coverage: bool = False) -> None:
@@ -769,6 +903,7 @@ def main() -> int:
                         help="Extra Gradle argument for the engine build, such as -Pkeystore_property_file=<file> to sign with the release certificate. Repeatable")
     parser.add_argument("--engine-archive", type=Path, help="Use this engine build (oie-engine-<version>.tar.gz from --engine-only) instead of building it")
     parser.add_argument("--engine-only", action="store_true", help="Build the engine archive into dist/engine and stop")
+    parser.add_argument("--portable", action="store_true", help="Build the portable oie_unix .tar.gz and .sh, on an installed Java for any CPU, and stop")
     parser.add_argument("--coverage", action="store_true", help="Write a JaCoCo report of the unit tests to target/site/jacoco")
     parser.add_argument("--refresh", action="store_true", help="Build the engine and download add-ons again rather than reusing verified cache entries")
     parser.add_argument("--payload-only", action="store_true", help="Prepare the pinned payload and stop")
@@ -809,7 +944,13 @@ def main() -> int:
         build_payload(version, engine, engine_repo, host_platform(), args.refresh)
     if args.payload_only:
         return 0
+    if args.portable:
+        build_portable(version, java_home.resolve(), args.coverage)
+        return 0
     variants = {"both": [False, True], "with-jre": [True], "no-jre": [False]}[args.media]
+    if sys.platform.startswith("linux"):
+        # The portable .sh is the Linux installer without a bundled Java.
+        variants = [True]
     build_app(version, java_home.resolve(), args.type, (args.engine_java_home or java_home).resolve(), variants, args.coverage)
     return 0
 

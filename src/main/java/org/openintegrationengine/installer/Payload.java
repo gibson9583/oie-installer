@@ -46,6 +46,8 @@ final class Payload {
     boolean nativeEngine() { return manifest.path("format").asInt() == 2; }
     /** The -with-JRE media bundle a Java runtime for the engine; the others use an installed Java 17 or later. */
     boolean bundledJava() { return manifest.path("bundledJava").asBoolean(true); }
+    /** Portable media hold no native code for the engine: script launchers run on an installed Java, on any CPU. */
+    boolean portable() { return manifest.path("portable").asBoolean(false); }
     Path engine() throws IOException { return safe("engine"); }
     Path engineJava(Path home) throws IOException { return FilesSupport.safeTarget(home, manifest.path("engineJava").asText()); }
     Path launcher(Path home, String role) throws IOException { return FilesSupport.safeTarget(home, manifest.path("engineLaunchers").path(role).asText()); }
@@ -64,7 +66,7 @@ final class Payload {
                 throw new IOException("Missing or damaged payload: " + f.getKey());
         }
         if (nativeEngine()) {
-            if (!files.has("engine/" + manifest.path("engineJava").asText())) throw new IOException("The engine runtime has no pinned hash.");
+            if (!portable() && !files.has("engine/" + manifest.path("engineJava").asText())) throw new IOException("The engine runtime has no pinned hash.");
             for (String role : List.of("oieserver", "oieservice", "oiecommand"))
                 if (!files.has("engine/" + manifest.path("engineLaunchers").path(role).asText())) throw new IOException("A native launcher has no pinned hash: " + role);
         } else for (JsonNode name : manifest.path("launcher").path("files"))

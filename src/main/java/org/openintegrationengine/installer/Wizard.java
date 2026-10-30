@@ -57,7 +57,10 @@ public final class Wizard extends Application {
     private boolean appearanceReady;
     private Map<String, Object> result;
 
+    /** The window opened, so a later failure is not a reason to fall back to the text installer. */
+    static volatile boolean opened;
     @Override public void start(Stage stage) {
+        opened = true;
         for (String font : List.of("Inter-Regular", "Inter-Medium", "Inter-SemiBold", "Inter-Bold", "JetBrainsMono-Regular")) {
             try (var input = getClass().getResourceAsStream("/fonts/" + font + ".ttf")) { if (input != null) Font.loadFont(input, 12); }
             catch (java.io.IOException ignored) {}

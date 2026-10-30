@@ -7,7 +7,7 @@
   <name>Open Integration Engine Installer</name>
   <licenses><license><name>Mozilla Public License 2.0</name><url>https://www.mozilla.org/MPL/2.0/</url></license></licenses>
   <properties>
-    <maven.compiler.release>21</maven.compiler.release>
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <javafx.version>21.0.13</javafx.version>
     <jackson.version>2.22.4</jackson.version>

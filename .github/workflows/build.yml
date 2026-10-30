@@ -103,10 +103,89 @@ jobs:
           shellcheck --version
           sh ci/lint.sh
 
+  portable:
+    # oie_unix_<version>.tar.gz and .sh: one build for every CPU, on an installed Java, like install4j's.
+    name: Portable media
+    needs: engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ENGINE_VERSION: ${{ needs.engine.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: installer
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine-build
+          path: installer/target/engine-build
+      - uses: actions/checkout@v7
+        with:
+          repository: OpenIntegrationEngine/engine
+          ref: v${{ env.ENGINE_VERSION }}
+          fetch-depth: 1
+          path: engine
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          check-latest: true
+          cache: maven
+          cache-dependency-path: installer/pom.xml
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the portable media
+        working-directory: installer
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --engine-archive "target/engine-build/oie-engine-$ENGINE_VERSION.tar.gz" --java-home "$JAVA_HOME" --portable
+      - uses: actions/upload-artifact@v7
+        with:
+          name: oie-installer-portable
+          path: |
+            installer/dist/oie_unix_*
+            installer/dist/build-receipt-portable.json
+          if-no-files-found: error
+          retention-days: 14
+
+  portable-systems:
+    # The portable media on systems without their own build: no systemd, no desktop, Java 17, musl and another CPU.
+    name: Portable on ${{ matrix.name }}
+    needs: [engine, portable]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Java 17, image: 'eclipse-temurin:17-jdk', platform: linux/amd64 }
+          - { name: Alpine, image: 'eclipse-temurin:21-jdk-alpine', platform: linux/amd64 }
+          - { name: ppc64le, image: 'eclipse-temurin:17-jdk', platform: linux/ppc64le }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: oie-installer-portable
+          path: dist
+      - name: Emulate the CPU
+        if: matrix.platform != 'linux/amd64'
+        run: docker run --privileged --rm tonistiigi/binfmt --install "${PLATFORM#linux/}"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+      - name: Install and run
+        env:
+          IMAGE: ${{ matrix.image }}
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.engine.outputs.version }}
+        run: |
+          name="oie_unix_${VERSION//./_}"
+          docker run --rm --platform "$PLATFORM" -v "$PWD:/w:ro" "$IMAGE" sh /w/ci/check_portable.sh "/w/dist/$name.sh" "/w/dist/$name.tar.gz"
+
   installer:
     # The OIE install4j media: each platform with and without a bundled engine Java runtime, and the engine archives.
     name: ${{ matrix.name }}
-    needs: engine
+    needs: [engine, portable]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -203,6 +282,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           ENGINE_JDK: ${{ steps.engine-jdk.outputs.path }}
         run: python -u build.py --version "$ENGINE_VERSION" --engine-repo ../engine --engine-archive "target/engine-build/oie-engine-$ENGINE_VERSION.tar.gz" --java-home "$JAVA_HOME" --engine-java-home "$ENGINE_JDK" --type "${{ matrix.type }}" --coverage
+      - name: Add the portable media
+        if: runner.os != 'Windows'
+        uses: actions/download-artifact@v8
+        with:
+          name: oie-installer-portable
+          path: installer/dist
       - name: Test file cleanup
         working-directory: installer
         run: python ci/check_file_cleanup.py
@@ -242,12 +327,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libgtk-3-0t64 >/dev/null
           sudo env JAVA_HOME="$JAVA_HOME" xvfb-run -a -s "-screen 0 1280x900x24" "$(command -v python3)" -u ci/check_wizard.py
+          sudo env JAVA_HOME="$JAVA_HOME" xvfb-run -a -s "-screen 0 1280x900x24" "$(command -v python3)" -u ci/check_wizard.py --portable "dist/oie_unix_${ENGINE_VERSION//./_}.sh"
       - name: Preserve wizard screenshots
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: wizard-screens-${{ matrix.id }}
-          path: installer/target/wizard-screens/*.png
+          path: installer/target/wizard-screens/**
           if-no-files-found: ignore
           retention-days: 14
       - name: Install on Linux without systemd
@@ -266,25 +352,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload installer without JRE
+        # Linux has no separate installer without a JRE: the portable .sh is that installer.
+        if: runner.os != 'Linux'
         uses: actions/upload-artifact@v7
         with:
           name: oie-installer-${{ matrix.id }}-without-JRE
           path: |
             installer/dist/*
             !installer/dist/*-with-JRE.*
-            !installer/dist/*.tar.gz*
+            !installer/dist/oie_unix_*
+            !installer/dist/build-receipt-portable.json
             !installer/dist/*.zip*
             !installer/dist/engine
           if-no-files-found: error
           retention-days: 14
       - name: Upload engine archive
-        if: runner.os != 'macOS'
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: oie-archive-${{ matrix.id }}
-          path: |
-            installer/dist/*.tar.gz*
-            installer/dist/*.zip*
+          path: installer/dist/*.zip*
           if-no-files-found: error
           retention-days: 14
       - name: Preserve unit test coverage

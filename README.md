@@ -8,10 +8,10 @@ The installer uses JavaFX for its desktop wizard and `jpackage` for its applicat
 
 ## Packages
 
-The build produces two packages for each platform:
+The build produces these packages:
 
 - **With Java:** includes a Java 21 runtime for the engine. The filename includes `-with-JRE`.
-- **Without engine Java:** uses an installed Java 17 or later. The installer and its launchers include their own application runtimes.
+- **Without engine Java:** uses an installed Java 17 or later. On Windows and macOS, the installer and its launchers include their own application runtimes. The `oie_unix` packages hold no native engine code and run on an installed Java on any CPU.
 
 | Platform | Without engine Java | With Java |
 | --- | --- | --- |
@@ -20,7 +20,8 @@ The build produces two packages for each platform:
 | macOS Apple silicon | `oie_macos_<version>-aarch.dmg` | `oie_macos_<version>-aarch-with-JRE.dmg` |
 | macOS Intel | `oie_macos_<version>-x86.dmg` | `oie_macos_<version>-x86-with-JRE.dmg` |
 | Linux x64 | `oie_unix_<version>.sh` | `oie_unix_<version>-with-JRE.sh` |
-| Linux ARM64 | `oie_unix_<version>-aarch64.sh` | `oie_unix_<version>-aarch64-with-JRE.sh` |
+| Linux ARM64 | `oie_unix_<version>.sh` | `oie_unix_<version>-aarch64-with-JRE.sh` |
+| Other Unix systems and CPUs | `oie_unix_<version>.sh` | None |
 
 `<version>` uses underscores, for example `4_7_0`. Each package has a `.sha256` checksum file.
 
@@ -30,8 +31,7 @@ The build also produces engine archives without an installer:
 | --- | --- |
 | Windows x64 | `oie_windows-x64_<version>.zip` |
 | Windows ARM64 | `oie_windows-arm64_<version>.zip` |
-| Linux x64 | `oie_unix_<version>.tar.gz` |
-| Linux ARM64 | `oie_unix_<version>-aarch64.tar.gz` |
+| Linux, macOS and other Unix systems, any CPU | `oie_unix_<version>.tar.gz` |
 
 See [Engine archives](#engine-archives).
 
@@ -94,6 +94,8 @@ Use `-c` to answer the installer's questions in a terminal. Linux uses text mode
 ```bash
 sudo sh oie_unix_4_7_0-with-JRE.sh -c
 ```
+
+`oie_unix_<version>.sh` opens the wizard on Linux x64 and ARM64 with glibc. It uses text mode on other systems, and when the wizard cannot open. It needs Java 17 or later: it uses `JAVA_HOME`, then the `java` command on the `PATH`.
 
 Text mode asks the same questions as the wizard. Press Enter to accept the value in brackets. Add `-dir <folder>` to set the suggested engine folder.
 
@@ -303,9 +305,12 @@ The build compiles the installer and runs its unit tests. It writes file hashes 
 | `--engine-gradle-arg <arg>` | Adds a Gradle argument to the engine build |
 | `--engine-only` | Builds the engine into `dist/engine/` and stops |
 | `--engine-archive <file>` | Uses an engine build from `--engine-only` |
+| `--portable` | Builds the portable `oie_unix` media and stops |
 | `--refresh` | Builds the engine and downloads the add-ons again |
 
 On Windows ARM64, the wizard and the engine runtime are both native ARM64.
+
+`--portable` builds `oie_unix_<version>.tar.gz` and `oie_unix_<version>.sh` from any host. On Linux, `build.py` builds only the `-with-JRE` installer for the host CPU.
 
 ### Validation
 
@@ -349,7 +354,8 @@ The tests cover:
 - Installation with an external Java runtime.
 - Text mode on Linux, including a declined license.
 - The wizard on Linux under a virtual display: every page, validation, navigation, installation and the Done page. Screenshots are saved as a build artifact.
-- The engine archives on Windows and Linux, as a process and as a service.
+- The engine archives on Windows, Linux and macOS, as a process, and as a service on Windows and Linux.
+- The portable `oie_unix` media on Linux x64 and ARM64, macOS, Alpine, Java 17 and emulated `ppc64le`, including the wizard on Linux and its fallback to text mode.
 - Windows service stops with Ctrl+C, and the service stopping when the engine ends.
 - The uninstaller's questions, engine removal that keeps the data, and installation again over that data.
 - The engine build against the release archive: the same files and bytes, apart from jar signatures and the build date.

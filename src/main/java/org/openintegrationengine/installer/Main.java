@@ -1,6 +1,5 @@
 package org.openintegrationengine.installer;
 
-import javafx.application.Application;
 import java.nio.file.Path;
 import java.util.Arrays;
 
@@ -21,6 +20,19 @@ public final class Main {
             if (event.state().equals("active") && !event.label().equals(shown[0])) System.out.println(shown[0] = event.label());
         }, System.out::println);
         System.out.println(Json.MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result));
+    }
+    /** Portable media hold JavaFX only for Linux x64 and ARM64 with glibc. */
+    private static boolean wizardAvailable() {
+        try { Class.forName("javafx.application.Application", false, Main.class.getClassLoader()); return true; }
+        catch (ClassNotFoundException | LinkageError e) { return false; }
+    }
+    /** Like install4j, a Linux system without a desktop uses the text installer. */
+    private static boolean desktop() {
+        return Model.WINDOWS || Model.MAC || !System.getenv().getOrDefault("DISPLAY", "").isEmpty() || !System.getenv().getOrDefault("WAYLAND_DISPLAY", "").isEmpty();
+    }
+    private static void text() {
+        try { System.exit(TextInstaller.run(new String[0])); }
+        catch (Exception e) { System.err.println(e.getMessage()); System.exit(1); }
     }
     public static void main(String[] args) {
         if (args.length > 0) {
@@ -51,12 +63,16 @@ public final class Main {
                 if (System.getenv("OIE_INSTALLER_DEBUG") != null) e.printStackTrace();
                 System.exit(e instanceof IllegalArgumentException ? 2 : 1);
             }
-        } else if (!Model.WINDOWS && !Model.MAC && System.getenv().getOrDefault("DISPLAY", "").isEmpty() && System.getenv().getOrDefault("WAYLAND_DISPLAY", "").isEmpty()) {
-            // Like install4j, a Linux system without a desktop uses the text installer.
-            try { System.exit(TextInstaller.run(new String[0])); }
-            catch (Exception e) { System.err.println(e.getMessage()); System.exit(1); }
+        } else if (!wizardAvailable() || !desktop()) {
+            text();
         } else {
-            Application.launch(Wizard.class);
+            try { WizardLauncher.launch(); }
+            catch (RuntimeException | LinkageError e) {
+                // JavaFX could not open here: no usable GTK, display or graphics device.
+                if (Wizard.opened) throw e;
+                System.err.println("The wizard cannot open here: " + e.getMessage() + "\nUsing the text installer.");
+                text();
+            }
         }
     }
 }

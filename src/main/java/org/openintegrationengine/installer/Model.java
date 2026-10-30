@@ -54,7 +54,8 @@ final class Model {
     static String command(String... args) throws IOException, InterruptedException {
         Process process = new ProcessBuilder(args).redirectErrorStream(true).start();
         var outputBytes = new java.util.concurrent.CompletableFuture<byte[]>();
-        Thread.ofVirtual().start(() -> { try { outputBytes.complete(process.getInputStream().readAllBytes()); } catch (IOException e) { outputBytes.completeExceptionally(e); } });
+        Thread reader = new Thread(() -> { try { outputBytes.complete(process.getInputStream().readAllBytes()); } catch (IOException e) { outputBytes.completeExceptionally(e); } }, "oie-command-output");
+        reader.setDaemon(true); reader.start();
         if (!process.waitFor(120, TimeUnit.SECONDS)) { process.destroyForcibly(); throw new IOException("Command timed out: " + args[0]); }
         String output;
         try {

@@ -16,7 +16,7 @@ SHELLCHECK_OPTS="--severity=warning" "$actionlint" -shellcheck "$shellcheck"
 echo "== shellcheck ci/*.sh"
 "$shellcheck" --severity=warning ci/*.sh
 
-echo "== shellcheck the .sh installer header"
+echo "== shellcheck the generated installers and launcher"
 "$python" -I - "$root" "$work" <<'EOF'
 import pathlib, sys
 root, work = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -27,6 +27,9 @@ image.mkdir()
 installer = work / "installer.sh"
 build.unix_installer(image, installer)
 (work / "header.sh").write_bytes(installer.read_bytes().split(b"\n__OIE_INSTALLER_PAYLOAD__\n")[0] + b"\n")
+build.unix_installer(image, installer, portable=True)
+(work / "portable.sh").write_bytes(installer.read_bytes().split(b"\n__OIE_INSTALLER_PAYLOAD__\n")[0] + b"\n")
+(work / "launcher.sh").write_text(build.PORTABLE_LAUNCHER.replace("@HEADER@", build.INIT_HEADER).replace("@ROLE@", "service"))
 EOF
-"$shellcheck" --severity=warning "$work/header.sh"
+"$shellcheck" --severity=warning "$work/header.sh" "$work/portable.sh" "$work/launcher.sh"
 echo "Lint passed"

@@ -660,6 +660,46 @@ def quiet_no_jre() -> None:
     print("== No-JRE pass complete", flush=True)
 
 
+def portable_package() -> None:
+    """The portable oie_unix .sh on an installed Java, like install4j's, as the downloaded file with -q -dir."""
+    if WINDOWS:
+        return
+    packages = [p for p in sorted((ROOT / "dist").glob("oie_unix_*.sh")) if "-with-JRE" not in p.name]
+    if len(packages) != 1:
+        raise SystemExit(f"Expected one portable .sh in dist/: {packages}")
+    base = Path("/Applications") if MAC else Path("/opt")
+    home = base / f"oie-smoke-portable-{secrets.token_hex(3)}"
+    env = dict(os.environ, JAVA_HOME=str(engine_java_home()))
+    failed = False
+    try:
+        print(f"== {packages[0].name} -q -dir {home}", flush=True)
+        run(["sh", packages[0], "-q", "-dir", home], env=env)
+        install4j_output(home, True)
+        if not (home / ".launcher/portable").is_dir() or list((home / ".launcher/portable/lib").glob("javafx-*")):
+            raise SystemExit("The portable engine has the wrong launcher files")
+        if not java_cmd(home):
+            raise SystemExit("The installer did not record the Java runtime")
+        # The service manager and these commands run without JAVA_HOME: the launcher reads -java-cmd.
+        run([launcher(home, "oieservice"), "status"], expect=0)
+        run([launcher(home, "oieservice"), "restart"], expect=0)
+        wait(lambda: run([launcher(home, "oieservice"), "status"], expect=None) == 0, "the restarted engine")
+    except BaseException:
+        failed = True
+        if home.exists():
+            diagnostics(home)
+        raise
+    finally:
+        if launcher(home, "uninstall").is_file():
+            run([launcher(home, "uninstall"), "--yes", "--delete-data"], expect=None)
+            try:
+                wait(lambda: not home.exists(), "engine folder removal", seconds=180)
+            except SystemExit as error:
+                if not failed:
+                    raise
+                print(error, flush=True)
+    print("== Portable package pass complete", flush=True)
+
+
 def downloaded_package() -> None:
     """Run the package a user downloads, the .exe, .dmg or .sh, in install4j's unattended mode."""
     packages = sorted((ROOT / "dist").glob("oie_*-with-JRE." + ("exe" if WINDOWS else "dmg" if MAC else "sh")))
@@ -710,10 +750,9 @@ def java_cmd(home: Path) -> bool:
 def archive_media(http: int, https: int) -> None:
     """The engine archive, like install4j's: unpack it, run it on an installed Java, register and remove the service."""
     archives = sorted((ROOT / "dist").glob("oie_*.zip" if WINDOWS else "oie_*.tar.gz"))
-    if MAC or not archives:
-        print("== No engine archive on this platform; skipped", flush=True)
-        return
-    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/opt")
+    if not archives:
+        raise SystemExit("No engine archive in dist/")
+    base = Path(os.environ.get("SystemDrive", "C:") + "\\") if WINDOWS else Path("/Applications") if MAC else Path("/opt")
     home = base / f"oie-smoke-archive-{secrets.token_hex(3)}"
     # A full Java 17+ runtime, as a user installs it: the engine runtime from the -with-JRE payload.
     env = dict(os.environ, JAVA_HOME=str(engine_java_home()))
@@ -828,6 +867,7 @@ def main() -> int:
     legacy_installer(48080, 48443)
     quiet_no_jre()
     downloaded_package()
+    portable_package()
     archive_media(58080, 58443)
     text_mode(19080, 19443)
     return 0

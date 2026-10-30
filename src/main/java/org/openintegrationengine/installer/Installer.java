@@ -342,7 +342,7 @@ final class Installer {
     private boolean toolsWritten;
     private void writeTools(Path home, ObjectNode receipt) throws Exception {
         Json.write(home.resolve(Model.RECEIPT), receipt, false);
-        if (!toolsWritten) { NativeProcesses.tools(home, payload, payload.version()); toolsWritten = true; }
+        if (!toolsWritten) { NativeProcesses.tools(home, payload, payload.version(), Path.of(receipt.path("javaCmd").asText())); toolsWritten = true; }
     }
     /** Settings and data the uninstaller keeps unless asked to delete them, like install4j, which removes only the files it installed. */
     static final Set<String> USER_DATA = Set.of("conf", "appdata", "logs", "backups", "custom-lib", "custom-extensions", "server-launcher-lib", Model.RECEIPT);

@@ -8,6 +8,7 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 | --- | --- | --- |
 | Media | `oie_windows-<arch>_<v>[-with-JRE].exe`, `oie_macos_<v>-<aarch\|x86>[-with-JRE].dmg`, `oie_unix_<v>[-with-JRE].sh` | Build |
 | Archives | `oie_windows-<arch>_<v>.zip`, `oie_unix_<v>.tar.gz`, with the `oie` folder, for an installed Java | Smoke test |
+| Portable Unix media | `oie_unix_<v>.sh` and `.tar.gz` run on an installed Java 17 or later, on any CPU; the `.tar.gz` also on macOS | Containers and smoke test |
 | Engine files | The same files as the release archive, built from the release tag | Build |
 | License | The engine's MPL 2.0 `LICENSE.txt`, accepted before the folder step | Wizard |
 | Launchers | `oieserver`, `oieservice`, `oiecommand`; `.exe` on Windows | Smoke test |
@@ -43,7 +44,8 @@ The baseline is the OIE 4.7.0 install4j 13.1.1 configuration and the output of t
 | Backup | None | `conf` and `appdata` copied to `backups/<date>-<version>` before an upgrade |
 | Media without Java | Use an installed Java for the installer and the engine | The installer application has its own runtime; the engine uses an installed Java 17 or later |
 | Uninstall data | Kept | Kept, or deleted when the user types `delete` or passes `--delete-data` |
-| Linux ARM64 media | The `oie_unix` media | `oie_unix_<v>-aarch64[-with-JRE].sh` and `oie_unix_<v>-aarch64.tar.gz` |
+| Linux ARM64 with Java | None | `oie_unix_<v>-aarch64-with-JRE.sh` |
+| Wizard in `oie_unix_<v>.sh` | Any system with a display | Linux x64 and ARM64 with glibc and GTK; text mode elsewhere |
 | Archive Java | install4j's Java search | `JAVA_HOME`, then `PATH`; service installation records it in `conf/custom.vmoptions` |
 | Engine build | Release pipeline | `gradlew build -PdisableTests=true` from the release tag |
 | Single-instance check | install4j launchers allow one running copy | The engine fails to start when its ports are in use |

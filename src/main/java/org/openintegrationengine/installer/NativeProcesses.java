@@ -16,7 +16,7 @@ final class NativeProcesses {
             Model.command("powershell.exe", "-NoProfile", "-EncodedCommand", Privileges.encoded(script));
             Instant until = Instant.now().plusSeconds(30);
             while (Instant.now().isBefore(until)) {
-                var processes = Model.engineProcesses(home); if (!processes.isEmpty()) return processes.getFirst().pid(); Thread.sleep(200);
+                var processes = Model.engineProcesses(home); if (!processes.isEmpty()) return processes.get(0).pid(); Thread.sleep(200);
             }
             throw new IOException("The engine launcher did not start in the desktop session.");
         }
@@ -47,12 +47,14 @@ final class NativeProcesses {
             catch (IOException e) { if (process.isAlive()) throw e; }
         }
     }
+    /** The installer classes in the engine folder. Portable engines hold them in .launcher/portable, with no Java runtime. */
     static String backendClasspath(Path home) {
-        Path app = Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
+        Path portable = home.resolve(".launcher/portable");
+        Path app = Files.isDirectory(portable) ? portable : Model.MAC ? home.resolve(".launcher/OIE Engine.app/Contents/app") : Model.WINDOWS ? home.resolve("app") : home.resolve(".launcher/oieserver/lib/app");
         return app.resolve("oie-installer-jpackage.jar") + File.pathSeparator + app.resolve("lib") + File.separator + "*";
     }
-    static void tools(Path home, Payload payload, String version) throws Exception {
-        Path java = payload.engineJava(home); String classpath = backendClasspath(home);
+    static void tools(Path home, Payload payload, String version, Path selectedJava) throws Exception {
+        Path java = payload.portable() ? selectedJava : payload.engineJava(home); String classpath = backendClasspath(home);
         if (Model.WINDOWS) {
             String script = """
                 param([switch]$Yes,[switch]$DeleteData)
