@@ -826,8 +826,8 @@ def text_mode(http: int, https: int) -> None:
     java, app = installer()
     classpath = os.pathsep.join([str(app / "oie-installer-jpackage.jar"), str(app / "lib" / "*")])
     password = "OIE-" + secrets.token_urlsafe(18)
-    # License (skip to the end, accept), folder, bundled Java, ports, Derby, password twice, normal process, three add-ons, install.
-    answers = "\n".join(["a", "y", "", "", str(http), str(https), "", password, password, "n", "", "", "", ""]) + "\n"
+    # License (skip to the end, accept), folder, bundled Java, ports, Derby, password twice, normal process, four add-ons, install.
+    answers = "\n".join(["a", "y", "", "", str(http), str(https), "", password, password, "n", "", "", "", "", ""]) + "\n"
     env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
     print("== Text mode with the license declined", flush=True)
     declined = subprocess.run([str(java), "-cp", classpath, "org.openintegrationengine.installer.Main", "-c", "-dir", str(home)],

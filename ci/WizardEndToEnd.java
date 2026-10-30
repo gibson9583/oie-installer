@@ -113,8 +113,11 @@ public final class WizardEndToEnd {
         click(next());
 
         page("Choose add-ons");
+        for (String id : Payload.IDS) {
+            check(fx(() -> find(ToggleButton.class, toggle -> ("install-" + id).equals(toggle.getId())).isSelected()), id + " starts selected");
+        }
         ToggleButton rbac = find(ToggleButton.class, toggle -> "install-rbac".equals(toggle.getId()));
-        check(fx(rbac::isSelected), "every add-on starts selected");
+        check(fx(rbac::isSelected), "RBAC starts selected");
         click(rbac);
         check(!fx(rbac::isSelected), "RBAC is cleared");
         click(next());

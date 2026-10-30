@@ -225,7 +225,7 @@ public final class Wizard extends Application {
         VBox introduction = panel(label("Set up your engine", "option-title"),
                 message("Choose an installation folder, Java runtime and startup options. For an existing engine, the installer keeps your settings and data and creates a backup before replacing program files.", "intro"),
                 new Separator(), label("Choose your add-ons", "option-title"),
-                message("OIE Web Client, Role-Based Access Control and Simple Channel History are included. All three are selected by default; you can change each choice before installing.", "intro"));
+                message("OIE Web Client, TLS Manager, Role-Based Access Control and Simple Channel History are included. All four are selected by default; you can change each choice before installing.", "intro"));
         page.getChildren().add(introduction);
         GridPane provenance = grid();
         row(provenance, 0, "Release source", payload.manifest.path("archive").asText(), null);
@@ -409,8 +409,9 @@ public final class Wizard extends Application {
         };
     }
     private void plugins() {
-        heading("Which add-ons would you like?", "All three are bundled with this installer. Choose the ones to install.");
+        heading("Which add-ons would you like?", "All four are bundled with this installer. Choose the ones to install.");
         Map<String, String> descriptions = Map.of("websupport", "Use the engine in your browser. Web Support includes and serves the OIE Web Client.",
+                "tls-manager", "Configure TLS-enabled connectors and manage certificates.",
                 "rbac", "Manage roles, permissions and channel access for engine users.", "simple-channel-history", "Track, compare and restore channel and code template revisions.");
         VBox options = panel(); options.setSpacing(0); int index = 0;
         for (var plugin : payload.plugins) {

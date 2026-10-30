@@ -41,7 +41,7 @@ class ModelTest {
         assertEquals(8443, plan.httpsPort());
         assertEquals("derby", plan.database());
         assertFalse(plan.service());
-        assertEquals(Map.of("websupport", true, "rbac", true, "simple-channel-history", true), plan.plugins());
+        assertEquals(Map.of("websupport", true, "tls-manager", true, "rbac", true, "simple-channel-history", true), plan.plugins());
     }
 
     @Test void planAddOnChoicesAreValidated() {
@@ -55,6 +55,16 @@ class ModelTest {
         assertThrows(IllegalArgumentException.class, () -> Model.Plan.from(plan));
         plan.put("plugins", "all");
         assertThrows(IllegalArgumentException.class, () -> Model.Plan.from(plan));
+    }
+
+    @Test void tlsManagerCanBeSkippedAndDefaultsOnForOlderPlans() {
+        var plan = Json.object().put("installDir", "/opt/oie");
+        plan.putObject("plugins").put("rbac", false);
+        assertTrue(Model.Plan.from(plan).plugins().get("tls-manager"));
+        plan.withObject("plugins").put("tls-manager", false);
+        assertFalse(Model.Plan.from(plan).plugins().get("tls-manager"));
+        assertTrue(Model.Plan.from(plan).plugins().get("websupport"));
+        assertEquals(List.of("websupport", "tls-manager", "rbac", "simple-channel-history"), Payload.IDS);
     }
 
     @Test void planServiceMustBeBoolean() {

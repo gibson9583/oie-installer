@@ -35,9 +35,10 @@ ROOT = Path(__file__).resolve().parent
 PAYLOAD = ROOT / "payload"
 REPOSITORY = "OpenIntegrationEngine/engine"
 PLUGINS = [
-    ("websupport", "OIE Web Client", "gibson9583/oie-web-support-plugin", "websupport"),
-    ("rbac", "Role-Based Access Control (RBAC)", "diridium-com/role-based-access-control", "rbac"),
-    ("simple-channel-history", "Simple Channel History", "diridium-com/simple-channel-history", "simple-channel-history"),
+    ("websupport", "OIE Web Client", "gibson9583/oie-web-support-plugin", "websupport", "latest"),
+    ("tls-manager", "TLS Manager", "NovaMap-Health/tls-manager-plugin", "tls-manager", "tags/1.1.0"),
+    ("rbac", "Role-Based Access Control (RBAC)", "diridium-com/role-based-access-control", "rbac", "latest"),
+    ("simple-channel-history", "Simple Channel History", "diridium-com/simple-channel-history", "simple-channel-history", "latest"),
 ]
 
 
@@ -106,8 +107,8 @@ def download(url: str, size: int, expected: str, target: Path, refresh: bool = F
 def bundle_plugins(version: str, files: dict, refresh: bool) -> list:
     plugins = []
     (PAYLOAD / "plugins").mkdir(exist_ok=True)
-    for plugin_id, name, repository, prefix in PLUGINS:
-        release = json.loads(get(f"https://api.github.com/repos/{repository}/releases/latest"))
+    for plugin_id, name, repository, prefix, release_ref in PLUGINS:
+        release = json.loads(get(f"https://api.github.com/repos/{repository}/releases/{release_ref}"))
         tag = release["tag_name"]
         plugin_version = tag.removeprefix("v")
         archive = f"{prefix}-{plugin_version}.zip"

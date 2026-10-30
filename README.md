@@ -82,6 +82,7 @@ The engine applies the initial administrator password when it creates the databa
 These add-ons are bundled and selected by default:
 
 - **OIE Web Client:** provides the web administrator through the Web Support add-on at `/oie-webadmin/`.
+- **TLS Manager 1.1.0:** provides TLS-enabled connectors and certificate management.
 - **Role-Based Access Control (RBAC):** provides role and permission management.
 - **Simple Channel History:** records channel revisions.
 
@@ -133,6 +134,7 @@ For custom settings, save an installation plan as JSON:
   "service": true,
   "plugins": {
     "websupport": true,
+    "tls-manager": true,
     "rbac": true,
     "simple-channel-history": true
   }
@@ -282,7 +284,7 @@ The Maven Wrapper supplies Maven. Build on the operating system and architecture
 python3 build.py --engine-repo ../oie --java-home /path/to/jdk-21 --gradle-java-home /path/to/jdk-17
 ```
 
-The build exports the release tag from the engine repository and builds it with `gradlew build -PdisableTests=true`. It caches the result by tag commit. It then downloads compatible add-ons and verifies them against published SHA-256 checksums and GitHub asset digests.
+The build exports the release tag from the engine repository and builds it with `gradlew build -PdisableTests=true`. It caches the result by tag commit. It then downloads TLS Manager 1.1.0 and the latest compatible releases of the other add-ons and verifies them against published SHA-256 checksums and GitHub asset digests.
 
 The engine build signs its client jars with the engine repository's self-signed key. To sign with a release certificate, pass the engine's keystore settings to Gradle:
 

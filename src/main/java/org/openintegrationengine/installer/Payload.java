@@ -8,7 +8,7 @@ import java.util.*;
 import java.util.function.Consumer;
 
 final class Payload {
-    static final List<String> IDS = List.of("websupport", "rbac", "simple-channel-history");
+    static final List<String> IDS = List.of("websupport", "tls-manager", "rbac", "simple-channel-history");
     final Path dir;
     final JsonNode manifest;
     final List<Plugin> plugins;
@@ -32,7 +32,7 @@ final class Payload {
             plugins.add(new Plugin(id, p.path("name").asText(), p.path("version").asText(), archive,
                     p.path("size").asLong(), p.path("sha256").asText(), p));
         }
-        if (seen.size() != IDS.size()) throw new IOException("The payload must bundle all three add-ons.");
+        if (seen.size() != IDS.size()) throw new IOException("The payload must bundle all four add-ons.");
     }
     static Payload load() throws Exception {
         String override = System.getProperty("oie.payload", System.getenv("OIE_INSTALLER_PAYLOAD"));
